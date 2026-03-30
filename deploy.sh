@@ -28,7 +28,17 @@ rsync -az --delete \
   --exclude='*.db' \
   /Users/jackywang/Documents/atoms/ \
   $SERVER:$SERVER_PATH/
-echo "    rsync OK"
+
+# 同步服务器 git 状态，使其与本地一致
+COMMIT_HASH=$(git rev-parse HEAD)
+COMMIT_MSG="$MSG"
+ssh $SERVER "
+  git config --global user.email 'jackywang@atoms.dev' 2>/dev/null
+  git config --global user.name 'Jacky Wang' 2>/dev/null
+  git -C $SERVER_PATH add -A 2>/dev/null
+  git -C $SERVER_PATH commit -m '$COMMIT_MSG' --allow-empty -q 2>/dev/null || true
+"
+echo "    rsync OK  (server git: $(git rev-parse --short HEAD))"
 
 echo "==> [3/3] 服务器重建前端 + 重启后端..."
 ssh $SERVER "
