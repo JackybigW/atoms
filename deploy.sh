@@ -32,7 +32,7 @@ echo "    rsync OK"
 
 echo "==> [3/3] 服务器重建前端 + 重启后端..."
 ssh $SERVER "
-  cd $REMOTE_APP_PATH/frontend && pnpm run build --silent &&
+  cd $REMOTE_APP_PATH/frontend && pnpm run build 2>&1 | tail -3 &&
   systemctl restart atoms-backend &&
   sleep 2 && systemctl is-active atoms-backend
 "
