@@ -66,6 +66,7 @@ function WorkspaceInner() {
     setProjectId,
     previewHtml,
     previewUrl,
+    setPreviewUrl,
     terminalLogs,
     fileVersion,
   } = useWorkspace();
@@ -94,10 +95,14 @@ function WorkspaceInner() {
   // Ensure workspace runtime is ready
   useEffect(() => {
     if (!projectId) return;
-    ensureWorkspaceRuntime(projectId).catch((err) => {
-      console.error("Failed to ensure workspace runtime:", err);
-    });
-  }, [projectId]);
+    ensureWorkspaceRuntime(projectId)
+      .then((status) => {
+        if (status.preview_url) setPreviewUrl(status.preview_url);
+      })
+      .catch((err) => {
+        console.error("Failed to ensure workspace runtime:", err);
+      });
+  }, [projectId, setPreviewUrl]);
 
   // Refresh preview when files change
   useEffect(() => {

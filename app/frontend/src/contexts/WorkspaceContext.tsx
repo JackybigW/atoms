@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useRef } from "react";
+import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from "react";
 import { client } from "@/lib/api";
 import { toast } from "sonner";
 
@@ -141,9 +141,15 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   ]);
   const [fileVersion, setFileVersion] = useState(0);
   const projectIdRef = useRef<number | null>(null);
+  const reloadingRef = useRef(false);
 
   // Keep ref in sync
   projectIdRef.current = projectId;
+
+  // Reset previewUrl whenever the active project changes
+  useEffect(() => {
+    setPreviewUrl("");
+  }, [projectId]);
 
   const addTerminalLog = useCallback((log: string) => {
     setTerminalLogs((prev) => [...prev, log]);
@@ -151,7 +157,8 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
 
   const reloadFiles = useCallback(async () => {
     const pid = projectIdRef.current;
-    if (!pid) return;
+    if (!pid || reloadingRef.current) return;
+    reloadingRef.current = true;
     try {
       const res = await client.entities.project_files.query({
         query: { project_id: pid },
@@ -171,8 +178,10 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       }
     } catch (err) {
       console.error("Failed to reload files:", err);
+    } finally {
+      reloadingRef.current = false;
     }
-  }, []);
+  }, [setFiles]);
 
   const writeFile = useCallback(
     async (filePath: string, content: string) => {
