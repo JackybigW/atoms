@@ -56,8 +56,12 @@ class ProjectWorkspaceService:
             if any(part in IGNORED_PARTS for part in path.relative_to(host_root).parts):
                 continue
             if path.is_file():
+                try:
+                    content = path.read_text(encoding="utf-8")
+                except (UnicodeDecodeError, ValueError):
+                    continue
                 snapshot[str(path.relative_to(host_root))] = {
-                    "content": path.read_text(encoding="utf-8"),
+                    "content": content,
                     "is_directory": False,
                 }
 

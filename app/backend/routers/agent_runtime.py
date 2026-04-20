@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import APIRouter, Depends
-from openmanus_runtime.config import config as openmanus_config
 from openmanus_runtime.streaming import StreamingSWEAgent, build_agent_llm
 from openmanus_runtime.tool.bash import ContainerBashSession
 from openmanus_runtime.tool.file_operators import ProjectFileOperator
@@ -82,8 +81,9 @@ async def run_agent(
                     host_root=paths.host_root,
                 )
             except Exception as exc:
-                logger.warning("Could not start sandbox container, falling back to local: %s", exc)
-                container_name = None
+                await emit({"type": "error", "status": "failure", "error": f"Could not start sandbox: {exc}"})
+                await queue.put(None)
+                return
 
             # --- Build project-scoped tools ---
             file_operator = ProjectFileOperator(
@@ -91,13 +91,9 @@ async def run_agent(
                 container_root=paths.container_root,
             )
 
-            bash_session = (
-                ContainerBashSession(
-                    runtime_service=sandbox_service,
-                    container_name=container_name,
-                )
-                if container_name is not None
-                else None
+            bash_session = ContainerBashSession(
+                runtime_service=sandbox_service,
+                container_name=container_name,
             )
 
             llm = build_agent_llm(request.model)
@@ -105,7 +101,7 @@ async def run_agent(
                 llm=llm,
                 event_emitter=emit,
                 file_operator=file_operator,
-                bash_session=bash_session,
+                bash_session=bash_session,  # always a ContainerBashSession now
             )
 
             await emit(
