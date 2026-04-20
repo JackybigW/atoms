@@ -79,7 +79,7 @@ function createTraceId(): string {
 
 export default function ChatPanel({ mode }: ChatPanelProps) {
   const { user, isAuthenticated } = useAuth();
-  const { projectId, addTerminalLog, reloadFiles, setPreviewUrl, reloadPreview } = useWorkspace();
+  const { projectId, addTerminalLog, reloadFiles, setPreview, clearPreview, reloadPreview } = useWorkspace();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -229,21 +229,25 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
       }
 
       if (type === "preview_ready") {
-        const previewUrl = String(payload.preview_url || "");
-        setPreviewUrl(previewUrl);
+        const preview_session_key = String(payload.preview_session_key || "");
+        const preview_frontend_url = String(payload.preview_frontend_url || "");
+        const preview_backend_url = String(payload.preview_backend_url || "");
+        const frontend_status = payload.frontend_status ? String(payload.frontend_status) : undefined;
+        const backend_status = payload.backend_status ? String(payload.backend_status) : undefined;
+        setPreview({ preview_session_key, preview_frontend_url, preview_backend_url, frontend_status, backend_status });
         reloadPreview();
-        addTerminalLog(`$ [agent:${traceId}] preview ready: ${previewUrl}`);
+        addTerminalLog(`$ [agent:${traceId}] preview ready: ${preview_frontend_url}`);
         return;
       }
 
       if (type === "preview_failed") {
-        setPreviewUrl("");
+        clearPreview();
         reloadPreview();
         addTerminalLog(`$ [agent:${traceId}] preview failed: ${String(payload.reason || "unknown")}`);
         return;
       }
     },
-    [addTerminalLog, appendMessage, logAgentTrace, selectedModel, reloadFiles, setPreviewUrl, reloadPreview]
+    [addTerminalLog, appendMessage, logAgentTrace, selectedModel, reloadFiles, setPreview, clearPreview, reloadPreview]
   );
 
   const handleSend = async () => {

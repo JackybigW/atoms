@@ -65,8 +65,8 @@ function WorkspaceInner() {
   const {
     setProjectId,
     previewHtml,
-    previewUrl,
-    setPreviewUrl,
+    preview,
+    setPreview,
     terminalLogs,
     previewKey,
     reloadPreview,
@@ -96,12 +96,12 @@ function WorkspaceInner() {
     if (!projectId) return;
     ensureWorkspaceRuntime(projectId)
       .then((status) => {
-        if (status.preview_url) setPreviewUrl(status.preview_url);
+        setPreview({ ...status });
       })
       .catch((err) => {
         console.error("Failed to ensure workspace runtime:", err);
       });
-  }, [projectId, setPreviewUrl]);
+  }, [projectId, setPreview]);
 
   // Load project
   useEffect(() => {
@@ -198,7 +198,8 @@ function WorkspaceInner() {
         return <ChatPanel mode={mode} />;
       case "editor":
         return <CodeEditor />;
-      case "preview":
+      case "preview": {
+        const frontendUrl = preview.preview_frontend_url;
         return (
           <div className="h-full flex flex-col">
             <div className="flex items-center gap-2 px-3 py-2 border-b border-[#27272A]">
@@ -236,7 +237,7 @@ function WorkspaceInner() {
               </div>
               <div className="flex-1 flex items-center bg-[#18181B] border border-[#27272A] rounded-lg px-3 py-1.5">
                 <Globe className="w-3.5 h-3.5 text-[#52525B] mr-2" />
-                <span className="text-xs text-[#71717A]">{previewUrl || "localhost:5173"}</span>
+                <span className="text-xs text-[#71717A]">{frontendUrl || "localhost:5173"}</span>
               </div>
               <button
                 className="text-[#71717A] hover:text-white p-1.5"
@@ -245,6 +246,11 @@ function WorkspaceInner() {
                 <RefreshCw className="w-3.5 h-3.5" />
               </button>
             </div>
+            {preview.backend_status && preview.backend_status !== "running" ? (
+              <div className="border-b border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                Backend preview is still starting. Frontend interactions that require API calls may be degraded.
+              </div>
+            ) : null}
             <div className="flex-1 flex items-start justify-center bg-[#0A0A0C] p-4 overflow-auto">
               <div
                 className="bg-white rounded-lg overflow-hidden shadow-2xl transition-all duration-300"
@@ -254,11 +260,11 @@ function WorkspaceInner() {
                   height: "100%",
                 }}
               >
-                {previewUrl || previewHtml ? (
+                {frontendUrl || previewHtml ? (
                   <iframe
                     key={previewKey}
-                    src={previewUrl || undefined}
-                    srcDoc={!previewUrl ? previewHtml : undefined}
+                    src={frontendUrl || undefined}
+                    srcDoc={!frontendUrl ? previewHtml : undefined}
                     title="App Preview"
                     className="w-full h-full border-0"
                     sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
@@ -283,6 +289,7 @@ function WorkspaceInner() {
             </div>
           </div>
         );
+      }
       case "terminal":
         return (
           <div className="h-full bg-[#0A0A0C] font-mono text-xs p-4 overflow-auto">

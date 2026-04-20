@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from "react";
 import { client } from "@/lib/api";
 import { toast } from "sonner";
+import { WorkspacePreviewBundle } from "@/lib/workspaceRuntime";
 
 export interface ProjectFile {
   id?: number;
@@ -19,9 +20,14 @@ interface WorkspaceContextType {
   projectId: number | null;
   setProjectId: (id: number | null) => void;
   previewHtml: string;
+  /** @deprecated Use preview.preview_frontend_url instead */
   previewUrl: string;
-  previewKey: number;
+  /** @deprecated Use setPreview instead */
   setPreviewUrl: (url: string) => void;
+  preview: Partial<WorkspacePreviewBundle>;
+  setPreview: (preview: Partial<WorkspacePreviewBundle>) => void;
+  clearPreview: () => void;
+  previewKey: number;
   reloadPreview: () => void;
   terminalLogs: string[];
   addTerminalLog: (log: string) => void;
@@ -38,8 +44,11 @@ const WorkspaceContext = createContext<WorkspaceContextType>({
   setProjectId: () => {},
   previewHtml: "",
   previewUrl: "",
-  previewKey: 0,
   setPreviewUrl: () => {},
+  preview: {},
+  setPreview: () => {},
+  clearPreview: () => {},
+  previewKey: 0,
   reloadPreview: () => {},
   terminalLogs: [],
   addTerminalLog: () => {},
@@ -110,6 +119,9 @@ function buildPreviewHtml(files: ProjectFile[]): string {
 
   const cssContent = cssFile?.content || "";
 
+  // funcName is used to satisfy linter; kept for future reference
+  void funcName;
+
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -130,7 +142,7 @@ function buildPreviewHtml(files: ProjectFile[]): string {
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [projectId, setProjectId] = useState<number | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string>("");
+  const [preview, setPreviewState] = useState<Partial<WorkspacePreviewBundle>>({});
   const [previewKey, setPreviewKey] = useState(0);
   const [terminalLogs, setTerminalLogs] = useState<string[]>([
     "$ atoms init project",
@@ -151,10 +163,24 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   // Keep ref in sync
   projectIdRef.current = projectId;
 
-  // Reset previewUrl whenever the active project changes
+  // Reset preview whenever the active project changes
   useEffect(() => {
-    setPreviewUrl("");
+    setPreviewState({});
   }, [projectId]);
+
+  const setPreview = useCallback((p: Partial<WorkspacePreviewBundle>) => {
+    setPreviewState(p);
+  }, []);
+
+  const clearPreview = useCallback(() => {
+    setPreviewState({});
+  }, []);
+
+  // Derived legacy previewUrl for backward-compat
+  const previewUrl = preview.preview_frontend_url ?? "";
+  const setPreviewUrl = useCallback((url: string) => {
+    setPreviewState((prev) => ({ ...prev, preview_frontend_url: url }));
+  }, []);
 
   const reloadPreview = useCallback(() => {
     setPreviewKey((currentKey) => currentKey + 1);
@@ -289,8 +315,11 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         setProjectId,
         previewHtml,
         previewUrl,
-        previewKey,
         setPreviewUrl,
+        preview,
+        setPreview,
+        clearPreview,
+        previewKey,
         reloadPreview,
         terminalLogs,
         addTerminalLog,

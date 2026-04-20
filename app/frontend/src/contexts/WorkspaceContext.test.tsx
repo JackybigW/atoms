@@ -3,9 +3,10 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { useEffect } from "react";
 import { WorkspaceProvider, useWorkspace } from "./WorkspaceContext";
+import type { WorkspacePreviewBundle } from "@/lib/workspaceRuntime";
 
 function WorkspaceConsumer({ projectId }: { projectId: number | null }) {
-  const { previewKey, reloadPreview, previewUrl, setPreviewUrl, setProjectId } = useWorkspace();
+  const { previewKey, reloadPreview, preview, setPreview, setProjectId } = useWorkspace();
 
   useEffect(() => {
     setProjectId(projectId);
@@ -14,11 +15,22 @@ function WorkspaceConsumer({ projectId }: { projectId: number | null }) {
   return (
     <div>
       <div data-testid="preview-key">{previewKey}</div>
-      <div data-testid="preview-url">{previewUrl}</div>
+      <div data-testid="preview-url">{preview.preview_frontend_url ?? ""}</div>
       <button onClick={reloadPreview} type="button">
         Reload preview
       </button>
-      <button onClick={() => setPreviewUrl("http://localhost:4173")} type="button">
+      <button
+        onClick={() =>
+          setPreview({
+            preview_session_key: "sess-1",
+            preview_frontend_url: "http://localhost:4173",
+            preview_backend_url: "http://localhost:4174",
+            frontend_status: "running",
+            backend_status: "running",
+          } satisfies Partial<WorkspacePreviewBundle>)
+        }
+        type="button"
+      >
         Set preview URL
       </button>
     </div>
@@ -72,5 +84,19 @@ describe("WorkspaceContext", () => {
     );
 
     expect(screen.getByTestId("preview-url")).toHaveTextContent("");
+  });
+
+  it("setPreview stores the full preview bundle", () => {
+    render(
+      <WorkspaceProvider>
+        <WorkspaceConsumer projectId={1} />
+      </WorkspaceProvider>
+    );
+
+    act(() => {
+      screen.getByRole("button", { name: "Set preview URL" }).click();
+    });
+
+    expect(screen.getByTestId("preview-url")).toHaveTextContent("http://localhost:4173");
   });
 });
