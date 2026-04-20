@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -82,6 +83,56 @@ async def test_workspace_runtime_sessions_user_project_is_unique():
             )
             with pytest.raises(IntegrityError):
                 await db.commit()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_workspace_runtime_sessions_service_handles_legacy_duplicates():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    """
+                    CREATE TABLE workspace_runtime_sessions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id VARCHAR NOT NULL,
+                        project_id INTEGER NOT NULL,
+                        container_name VARCHAR NOT NULL,
+                        status VARCHAR NOT NULL,
+                        preview_port INTEGER NULL,
+                        frontend_port INTEGER NULL,
+                        backend_port INTEGER NULL,
+                        created_at DATETIME NULL,
+                        updated_at DATETIME NULL
+                    )
+                    """
+                )
+            )
+            await conn.execute(
+                text(
+                    """
+                    INSERT INTO workspace_runtime_sessions
+                        (user_id, project_id, container_name, status, preview_port, frontend_port, backend_port)
+                    VALUES
+                        ('user-123', 42, 'atoms-user-123-42-old', 'stopped', 3000, 5173, 8000),
+                        ('user-123', 42, 'atoms-user-123-42-new', 'running', 3001, 5174, 8001)
+                    """
+                )
+            )
+
+        session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with session_maker() as db:
+            service = WorkspaceRuntimeSessionsService(db)
+            runtime = await service.get_by_project(user_id="user-123", project_id=42)
+
+        assert runtime is not None
+        assert runtime.container_name == "atoms-user-123-42-new"
+        assert runtime.status == "running"
+        assert runtime.preview_port == 3001
     finally:
         await engine.dispose()
 

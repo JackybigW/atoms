@@ -37,6 +37,8 @@ class WorkspaceRuntimeSessionsService:
                 select(WorkspaceRuntimeSessions)
                 .where(WorkspaceRuntimeSessions.user_id == user_id)
                 .where(WorkspaceRuntimeSessions.project_id == project_id)
+                .order_by(WorkspaceRuntimeSessions.id.desc())
+                .limit(1)
             )
             return result.scalar_one_or_none()
         except Exception:
