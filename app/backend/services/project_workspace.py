@@ -34,7 +34,7 @@ class ProjectWorkspaceService:
         return WorkspacePaths(host_root=host_root, container_root=Path("/workspace"))
 
     def materialize_files(self, host_root: Path, project_files: Iterable[dict]) -> None:
-        host_root = Path(host_root)
+        host_root = self._ensure_within_root(self.base_root, host_root, "host_root")
         host_root.mkdir(parents=True, exist_ok=True)
 
         for file_record in project_files:
@@ -49,7 +49,7 @@ class ProjectWorkspaceService:
             target_path.write_text(file_record.get("content") or "", encoding="utf-8")
 
     def snapshot_files(self, host_root: Path) -> dict[str, dict]:
-        host_root = Path(host_root)
+        host_root = self._ensure_within_root(self.base_root, host_root, "host_root")
         snapshot: dict[str, dict] = {}
 
         for path in host_root.rglob("*"):

@@ -96,3 +96,25 @@ def test_materialize_files_rejects_absolute_paths(tmp_path):
         assert "escape" in str(exc)
     else:
         raise AssertionError("expected ValueError for absolute file path")
+
+
+def test_external_host_root_is_rejected(tmp_path):
+    service = ProjectWorkspaceService(base_root=tmp_path)
+    outside_root = tmp_path.parent / "outside"
+
+    try:
+        service.materialize_files(
+            outside_root,
+            [{"file_path": "src/App.tsx", "content": "nope"}],
+        )
+    except ValueError as exc:
+        assert "host_root" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for external host_root")
+
+    try:
+        service.snapshot_files(outside_root)
+    except ValueError as exc:
+        assert "host_root" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for external host_root snapshot")
