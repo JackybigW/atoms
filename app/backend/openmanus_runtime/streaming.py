@@ -7,6 +7,8 @@ from openmanus_runtime.agent.swe import SWEAgent
 from openmanus_runtime.config import LLMSettings, config
 from openmanus_runtime.llm import LLM
 from openmanus_runtime.schema import Message
+from openmanus_runtime.tool.file_operators import FileOperator
+from openmanus_runtime.tool.str_replace_editor import StrReplaceEditor
 
 
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
@@ -75,6 +77,43 @@ class StreamingSWEAgent(SWEAgent):
             results.append(result)
 
         return "\n\n".join(results)
+
+
+    @classmethod
+    def build_for_workspace(
+        cls,
+        llm,
+        event_emitter: EventEmitter,
+        file_operator: FileOperator,
+        bash_session,
+    ) -> "StreamingSWEAgent":
+        """Create a StreamingSWEAgent scoped to a project workspace.
+
+        Args:
+            llm: LLM instance (or None for default).
+            event_emitter: Async callable for SSE events.
+            file_operator: A ProjectFileOperator mapping container paths to host.
+            bash_session: A ContainerBashSession (or None for local bash).
+        """
+        from openmanus_runtime.tool.bash import ContainerBash, Bash
+        from openmanus_runtime.tool import Terminate, ToolCollection
+
+        editor = StrReplaceEditor.with_operator(file_operator)
+
+        if bash_session is not None:
+            bash_tool = ContainerBash.with_session(
+                bash_session.runtime_service, bash_session.container_name
+            )
+        else:
+            bash_tool = Bash()
+
+        tools = ToolCollection(bash_tool, editor, Terminate())
+
+        kwargs = {"available_tools": tools, "event_emitter": event_emitter}
+        if llm is not None:
+            kwargs["llm"] = llm
+
+        return cls(**kwargs)
 
 
 def build_agent_llm(model: Optional[str]) -> Optional[LLM]:

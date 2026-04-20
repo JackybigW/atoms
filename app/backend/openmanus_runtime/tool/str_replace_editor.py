@@ -101,10 +101,20 @@ class StrReplaceEditor(BaseTool):
     _file_history: DefaultDict[PathLike, List[str]] = defaultdict(list)
     _local_operator: LocalFileOperator = LocalFileOperator()
     _sandbox_operator: SandboxFileOperator = SandboxFileOperator()
+    _injected_operator: Optional[FileOperator] = None
+
+    @classmethod
+    def with_operator(cls, operator: FileOperator) -> "StrReplaceEditor":
+        """Create a StrReplaceEditor that uses the given FileOperator."""
+        instance = cls()
+        instance._injected_operator = operator
+        return instance
 
     # def _get_operator(self, use_sandbox: bool) -> FileOperator:
     def _get_operator(self) -> FileOperator:
         """Get the appropriate file operator based on execution mode."""
+        if self._injected_operator is not None:
+            return self._injected_operator
         return (
             self._sandbox_operator
             if config.sandbox.use_sandbox

@@ -152,6 +152,44 @@ class Bash(BaseTool):
         raise ToolError("no command provided.")
 
 
+class ContainerBashSession:
+    """A bash session that delegates command execution to a running Docker container."""
+
+    def __init__(self, runtime_service, container_name: str):
+        self.runtime_service = runtime_service
+        self.container_name = container_name
+
+    async def run(self, command: str) -> CLIResult:
+        returncode, stdout, stderr = await self.runtime_service.exec(
+            self.container_name,
+            f"cd /workspace && {command}",
+        )
+        return CLIResult(output=stdout.rstrip(), error=stderr.rstrip(), system=str(returncode))
+
+
+class ContainerBash(Bash):
+    """A Bash tool variant that executes commands inside a Docker container."""
+
+    _container_session: Optional[ContainerBashSession] = None
+
+    @classmethod
+    def with_session(cls, runtime_service, container_name: str) -> "ContainerBash":
+        tool = cls()
+        tool._container_session = ContainerBashSession(runtime_service, container_name)
+        return tool
+
+    async def execute(
+        self, command: str | None = None, restart: bool = False, **kwargs
+    ) -> CLIResult:
+        if self._container_session is None:
+            return await super().execute(command=command, restart=restart, **kwargs)
+
+        if command is None:
+            raise ToolError("no command provided.")
+
+        return await self._container_session.run(command)
+
+
 if __name__ == "__main__":
     bash = Bash()
     rst = asyncio.run(bash.execute("ls -l"))

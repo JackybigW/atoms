@@ -93,6 +93,45 @@ class LocalFileOperator(FileOperator):
             ) from exc
 
 
+class ProjectFileOperator(LocalFileOperator):
+    """File operator that maps container-relative paths (e.g. /workspace/…) to a host directory."""
+
+    def __init__(self, host_root: Path, container_root: Path):
+        self.host_root = Path(host_root)
+        self.container_root = Path(container_root)
+
+    def _to_host_path(self, path: PathLike) -> Path:
+        raw = Path(path)
+        if not raw.is_absolute() or not str(raw).startswith(str(self.container_root)):
+            raise ToolError(f"Path must live under {self.container_root}, got: {raw}")
+        try:
+            relative = raw.relative_to(self.container_root)
+        except ValueError:
+            raise ToolError(f"Path must live under {self.container_root}, got: {raw}")
+        host_path = (self.host_root / relative).resolve()
+        resolved_root = self.host_root.resolve()
+        if host_path != resolved_root and resolved_root not in host_path.parents:
+            raise ToolError("Path escapes project workspace")
+        return host_path
+
+    async def read_file(self, path: PathLike) -> str:
+        return await super().read_file(self._to_host_path(path))
+
+    async def write_file(self, path: PathLike, content: str) -> None:
+        host_path = self._to_host_path(path)
+        host_path.parent.mkdir(parents=True, exist_ok=True)
+        return await super().write_file(host_path, content)
+
+    async def is_directory(self, path: PathLike) -> bool:
+        return await super().is_directory(self._to_host_path(path))
+
+    async def exists(self, path: PathLike) -> bool:
+        return await super().exists(self._to_host_path(path))
+
+    async def run_command(self, cmd: str, timeout: Optional[float] = 120.0) -> Tuple[int, str, str]:
+        return await super().run_command(cmd, timeout)
+
+
 class SandboxFileOperator(FileOperator):
     """File operations implementation for sandbox environment."""
 
