@@ -194,18 +194,22 @@ class DatabaseManager:
                 logger.error("Database engine not initialized")
                 raise RuntimeError("Database engine not initialized")
 
-            # logger.info("🔧 Starting table structure repair...")
-            # await self.check_and_repair_existing_tables()
-            # logger.info("🔧 Table structure repair completed")
+            import models  # noqa: F401
+
+            logger.info("🔧 Starting table structure repair...")
+            await self.check_and_repair_existing_tables()
+            logger.info("🔧 Table structure repair completed")
 
             try:
                 logger.info("🔧 Starting table creation...")
                 async with self.engine.begin() as conn:
                     await conn.run_sync(Base.metadata.create_all)
-                    self._initialized = True
-                    logger.info("Tables initialized successfully")
-                    logger.debug(f"[DB_OP] Create tables completed in {time.time() - start_time:.4f}s")
+                await self._ensure_workspace_runtime_session_uniqueness()
+                self._initialized = True
+                logger.info("Tables initialized successfully")
+                logger.debug(f"[DB_OP] Create tables completed in {time.time() - start_time:.4f}s")
             except (UniqueViolationError, DuplicateTableError) as e:
+                await self._ensure_workspace_runtime_session_uniqueness()
                 self._initialized = True
                 logger.info(f"Duplicate table creation: {e}, ignored.")
             except Exception as e:
@@ -318,6 +322,67 @@ class DatabaseManager:
 
         except Exception as e:
             logger.warning(f"Failed to repair table {table_name}: {e}")
+
+    async def _ensure_workspace_runtime_session_uniqueness(self):
+        table_name = "workspace_runtime_sessions"
+        existing_tables = await self._get_existing_tables()
+        if table_name not in existing_tables:
+            return
+
+        delete_duplicates = text(
+            """
+            DELETE FROM workspace_runtime_sessions
+            WHERE id NOT IN (
+                SELECT MAX(id)
+                FROM workspace_runtime_sessions
+                GROUP BY user_id, project_id
+            )
+            """
+        )
+        create_unique_index = text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_workspace_runtime_sessions_user_project
+            ON workspace_runtime_sessions (user_id, project_id)
+            """
+        )
+
+        async with self.engine.begin() as conn:
+            await conn.execute(delete_duplicates)
+            if not await self._workspace_runtime_session_unique_index_exists(conn):
+                await conn.execute(create_unique_index)
+
+    async def _workspace_runtime_session_unique_index_exists(self, conn) -> bool:
+        if self.engine.dialect.name == "sqlite":
+            index_result = await conn.execute(text("PRAGMA index_list(workspace_runtime_sessions)"))
+            for row in index_result.fetchall():
+                index_name = row[1]
+                is_unique = bool(row[2])
+                if not is_unique:
+                    continue
+
+                index_info = await conn.execute(text(f"PRAGMA index_info({index_name})"))
+                column_names = [info_row[2] for info_row in index_info.fetchall()]
+                if column_names == ["user_id", "project_id"]:
+                    return True
+            return False
+
+        if self.engine.dialect.name == "postgresql":
+            result = await conn.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM pg_indexes
+                    WHERE schemaname = 'public'
+                      AND tablename = 'workspace_runtime_sessions'
+                      AND indexdef ILIKE '%UNIQUE%'
+                      AND indexdef ILIKE '%(user_id, project_id)%'
+                    LIMIT 1
+                    """
+                )
+            )
+            return result.first() is not None
+
+        return False
 
     async def _add_missing_columns(self, table_name: str, missing_columns: list):
         """Batch add missing fields to improve efficiency.
