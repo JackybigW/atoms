@@ -34,13 +34,18 @@ def _validate_preview_session(session):
 async def _proxy_http_request(upstream: str, request: Request):
     timeout = httpx.Timeout(30.0, connect=5.0)
     async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
-        response = await client.request(
-            request.method,
-            upstream,
-            params=request.query_params,
-            content=await request.body(),
-            headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
-        )
+        try:
+            response = await client.request(
+                request.method,
+                upstream,
+                params=request.query_params,
+                content=await request.body(),
+                headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
+            )
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=504, detail="Preview timed out")
+        except httpx.ConnectError:
+            raise HTTPException(status_code=502, detail="Preview unavailable")
     headers = {k: v for k, v in response.headers.items() if k.lower() not in HOP_BY_HOP}
     return response.status_code, headers, response.content
 

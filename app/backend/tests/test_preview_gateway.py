@@ -65,3 +65,9 @@ def test_expired_preview_session_key_returns_404(monkeypatch):
     client = _make_client(monkeypatch)
     response = client.get("/preview/expired-session/frontend/")
     assert response.status_code == 404
+
+
+def test_unknown_preview_session_key_returns_404(monkeypatch):
+    client = _make_client(monkeypatch)
+    response = client.get("/preview/unknown-key/frontend/")
+    assert response.status_code == 404
