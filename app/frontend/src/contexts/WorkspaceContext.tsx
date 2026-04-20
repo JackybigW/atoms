@@ -20,7 +20,9 @@ interface WorkspaceContextType {
   setProjectId: (id: number | null) => void;
   previewHtml: string;
   previewUrl: string;
+  previewKey: number;
   setPreviewUrl: (url: string) => void;
+  reloadPreview: () => void;
   terminalLogs: string[];
   addTerminalLog: (log: string) => void;
   fileVersion: number;
@@ -36,7 +38,9 @@ const WorkspaceContext = createContext<WorkspaceContextType>({
   setProjectId: () => {},
   previewHtml: "",
   previewUrl: "",
+  previewKey: 0,
   setPreviewUrl: () => {},
+  reloadPreview: () => {},
   terminalLogs: [],
   addTerminalLog: () => {},
   fileVersion: 0,
@@ -127,6 +131,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [projectId, setProjectId] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>("");
+  const [previewKey, setPreviewKey] = useState(0);
   const [terminalLogs, setTerminalLogs] = useState<string[]>([
     "$ atoms init project",
     "✓ Project initialized",
@@ -150,6 +155,10 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setPreviewUrl("");
   }, [projectId]);
+
+  const reloadPreview = useCallback(() => {
+    setPreviewKey((currentKey) => currentKey + 1);
+  }, []);
 
   const addTerminalLog = useCallback((log: string) => {
     setTerminalLogs((prev) => [...prev, log]);
@@ -280,7 +289,9 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         setProjectId,
         previewHtml,
         previewUrl,
+        previewKey,
         setPreviewUrl,
+        reloadPreview,
         terminalLogs,
         addTerminalLog,
         fileVersion,

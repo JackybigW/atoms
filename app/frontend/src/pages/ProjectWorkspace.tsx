@@ -68,7 +68,8 @@ function WorkspaceInner() {
     previewUrl,
     setPreviewUrl,
     terminalLogs,
-    fileVersion,
+    previewKey,
+    reloadPreview,
   } = useWorkspace();
   const projectId = id ? parseInt(id) : null;
 
@@ -85,8 +86,6 @@ function WorkspaceInner() {
   const [publishUrl, setPublishUrl] = useState("");
   const [copied, setCopied] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
-  const [previewKey, setPreviewKey] = useState(0);
-
   // Sync projectId to context
   useEffect(() => {
     setProjectId(projectId);
@@ -103,11 +102,6 @@ function WorkspaceInner() {
         console.error("Failed to ensure workspace runtime:", err);
       });
   }, [projectId, setPreviewUrl]);
-
-  // Refresh preview when files change
-  useEffect(() => {
-    setPreviewKey((k) => k + 1);
-  }, [fileVersion]);
 
   // Load project
   useEffect(() => {
@@ -246,7 +240,7 @@ function WorkspaceInner() {
               </div>
               <button
                 className="text-[#71717A] hover:text-white p-1.5"
-                onClick={() => setPreviewKey((k) => k + 1)}
+                onClick={reloadPreview}
               >
                 <RefreshCw className="w-3.5 h-3.5" />
               </button>

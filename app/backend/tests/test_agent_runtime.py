@@ -111,11 +111,30 @@ def test_agent_run_sse_stream(monkeypatch):
 
 
 class _FakeSandboxService:
+    def __init__(self, dev_success: bool = True, wait_success: bool = True):
+        self.dev_success = dev_success
+        self.wait_success = wait_success
+        self.dev_calls: list[str] = []
+        self.wait_calls: list[tuple[str, int]] = []
+
     async def ensure_runtime(self, user_id, project_id, host_root):
-        return None  # signal: no container available, use local bash
+        return f"atoms-{user_id}-{project_id}"
 
     async def exec(self, container_name, command):
         return 0, "", ""
+
+    async def get_runtime_ports(self, container_name):
+        return {"frontend_port": 55555, "backend_port": 55556, "preview_port": 55555}
+
+    async def start_dev_server(self, container_name):
+        self.dev_calls.append(container_name)
+        if self.dev_success:
+            return 0, "", ""
+        return 2, "", "start-dev: ATOMS_PROJECT_ID env var is required"
+
+    async def wait_for_service(self, container_name, port, timeout_seconds=60.0, poll_interval_seconds=1.0):
+        self.wait_calls.append((container_name, port))
+        return self.wait_success
 
 
 class _FakeWorkspacePaths:
@@ -216,6 +235,145 @@ def test_agent_run_emits_workspace_sync(monkeypatch):
     pr_payload = json.loads(pr_line.removeprefix("data: "))
     assert "preview_url" in pr_payload
     assert pr_payload["preview_url"] == "/api/v1/workspace-runtime/projects/42/preview/"
+
+
+def test_agent_run_emits_preview_ready_after_agent_completion(monkeypatch):
+    monkeypatch.setattr("routers.agent_runtime.StreamingSWEAgent", FakeAgent)
+    monkeypatch.setattr("routers.agent_runtime.build_agent_llm", lambda model: None)
+    monkeypatch.setattr(
+        "routers.agent_runtime._get_workspace_service",
+        lambda: _FakeWorkspaceService(),
+    )
+    session_creates = []
+
+    async def fake_create(self, data):
+        session_creates.append(data)
+        return data
+
+    monkeypatch.setattr("routers.agent_runtime.WorkspaceRuntimeSessionsService.create", fake_create)
+    fake_sandbox = _FakeSandboxService()
+    monkeypatch.setattr(
+        "routers.agent_runtime._get_sandbox_service",
+        lambda: fake_sandbox,
+    )
+
+    fake_user = UserResponse(id="user-1", email="test@example.com", name="Test", role="user")
+
+    app = FastAPI()
+    app.include_router(router)
+
+    from dependencies.auth import get_current_user
+    from core.database import get_db
+
+    async def fake_get_current_user():
+        return fake_user
+
+    async def fake_get_db():
+        yield FakeDB()
+
+    app.dependency_overrides[get_current_user] = fake_get_current_user
+    app.dependency_overrides[get_db] = fake_get_db
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/agent/run",
+            json={"prompt": "build a todo app", "project_id": 7},
+        )
+
+    assert response.status_code == 200
+    body = response.text
+    assert "event: preview_ready" in body
+
+    preview_line = next(
+        line
+        for line in body.splitlines()
+        if line.startswith("data: ") and '"type": "preview_ready"' in line
+    )
+    preview_payload = json.loads(preview_line.removeprefix("data: "))
+    assert preview_payload["type"] == "preview_ready"
+    assert preview_payload["preview_url"] == "/api/v1/workspace-runtime/projects/7/preview/"
+    assert fake_sandbox.dev_calls == ["atoms-user-1-7"]
+    assert fake_sandbox.wait_calls == [("atoms-user-1-7", 3000)]
+    assert session_creates == [
+        {
+            "user_id": "user-1",
+            "project_id": 7,
+            "container_name": "atoms-user-1-7",
+            "status": "running",
+            "preview_port": 55555,
+            "frontend_port": 55555,
+            "backend_port": 55556,
+        }
+    ]
+
+
+def test_agent_run_emits_preview_failed_when_dev_server_times_out(monkeypatch):
+    monkeypatch.setattr("routers.agent_runtime.StreamingSWEAgent", FakeAgent)
+    monkeypatch.setattr("routers.agent_runtime.build_agent_llm", lambda model: None)
+    monkeypatch.setattr(
+        "routers.agent_runtime._get_workspace_service",
+        lambda: _FakeWorkspaceService(),
+    )
+    session_creates = []
+
+    async def fake_create(self, data):
+        session_creates.append(data)
+        return data
+
+    monkeypatch.setattr("routers.agent_runtime.WorkspaceRuntimeSessionsService.create", fake_create)
+    fake_sandbox = _FakeSandboxService(dev_success=True, wait_success=False)
+    monkeypatch.setattr(
+        "routers.agent_runtime._get_sandbox_service",
+        lambda: fake_sandbox,
+    )
+
+    fake_user = UserResponse(id="user-1", email="test@example.com", name="Test", role="user")
+
+    app = FastAPI()
+    app.include_router(router)
+
+    from dependencies.auth import get_current_user
+    from core.database import get_db
+
+    async def fake_get_current_user():
+        return fake_user
+
+    async def fake_get_db():
+        yield FakeDB()
+
+    app.dependency_overrides[get_current_user] = fake_get_current_user
+    app.dependency_overrides[get_db] = fake_get_db
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/agent/run",
+            json={"prompt": "build a todo app", "project_id": 7},
+        )
+
+    assert response.status_code == 200
+    body = response.text
+    assert "event: preview_failed" in body
+    assert "event: done" in body
+
+    preview_line = next(
+        line
+        for line in body.splitlines()
+        if line.startswith("data: ") and '"type": "preview_failed"' in line
+    )
+    preview_payload = json.loads(preview_line.removeprefix("data: "))
+    assert preview_payload["type"] == "preview_failed"
+    assert preview_payload["reason"] == "timeout"
+    assert session_creates == [
+        {
+            "user_id": "user-1",
+            "project_id": 7,
+            "container_name": "atoms-user-1-7",
+            "status": "starting",
+            "preview_port": 55555,
+            "frontend_port": 55555,
+            "backend_port": 55556,
+        }
+    ]
 
 
 def test_split_thinking_content_extracts_visible_content():

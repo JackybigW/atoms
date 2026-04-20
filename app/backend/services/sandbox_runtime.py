@@ -3,6 +3,7 @@ import contextlib
 import hashlib
 import json
 import re
+import time
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -45,6 +46,8 @@ class SandboxRuntimeService:
             f"{resolved_host_root}:/workspace",
             "-w",
             "/workspace",
+            "-e",
+            f"ATOMS_PROJECT_ID={project_id}",
             "-p",
             "0:3000",
             "-p",
@@ -63,12 +66,14 @@ class SandboxRuntimeService:
             image_id = runtime_identity.get("image_id")
             expected_image_id = await self.inspect_image_id(self.SANDBOX_IMAGE)
             has_required_ports = {"3000/tcp", "8000/tcp"}.issubset(runtime_identity.get("port_bindings", set()))
+            has_matching_project_env = f"ATOMS_PROJECT_ID={project_id}" in runtime_identity.get("env", [])
             if (
                 workspace_source != str(resolved_host_root)
                 or image_id != expected_image_id
                 or runtime_identity.get("working_dir") != "/workspace"
                 or runtime_identity.get("command") != ["sleep", "infinity"]
                 or not has_required_ports
+                or not has_matching_project_env
             ):
                 raise RuntimeError(
                     f"existing container {container_name} does not match requested workspace or image"
@@ -102,6 +107,51 @@ class SandboxRuntimeService:
             command,
         )
 
+    async def start_dev_server(self, container_name: str) -> tuple[int, str, str]:
+        return await self.exec(container_name, "/usr/local/bin/start-dev")
+
+    async def wait_for_service(
+        self,
+        container_name: str,
+        port: int,
+        timeout_seconds: float = 60.0,
+        poll_interval_seconds: float = 1.0,
+    ) -> bool:
+        deadline = time.monotonic() + timeout_seconds
+
+        while True:
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                return False
+
+            probe_timeout = min(2.0, remaining_seconds, self.command_timeout_seconds)
+            probe_command = (
+                f"curl -sf -o /dev/null --max-time {probe_timeout:g} "
+                f"http://localhost:{port}/"
+            )
+
+            try:
+                returncode, _, _ = await asyncio.wait_for(
+                    self.run_command(
+                        "docker",
+                        "exec",
+                        "-i",
+                        container_name,
+                        "/bin/bash",
+                        "-lc",
+                        probe_command,
+                    ),
+                    timeout=probe_timeout,
+                )
+            except TimeoutError:
+                return False
+
+            if returncode == 0:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(poll_interval_seconds)
+
     async def get_runtime_ports(self, container_name: str) -> dict[str, int | None]:
         returncode, stdout, stderr = await self._invoke("docker", "port", container_name)
         if returncode != 0:
@@ -117,7 +167,7 @@ class SandboxRuntimeService:
             "preview_port": frontend_port or backend_port,
         }
 
-    async def inspect_runtime(self, container_name: str) -> dict[str, str | None]:
+    async def inspect_runtime(self, container_name: str) -> dict[str, object]:
         returncode, stdout, stderr = await self._invoke("docker", "inspect", container_name)
         if returncode != 0:
             message = stderr.strip() or stdout.strip() or f"docker inspect failed for {container_name}"
@@ -132,6 +182,7 @@ class SandboxRuntimeService:
                 workspace_source = mount.get("Source")
                 break
         port_bindings = set((container.get("HostConfig", {}).get("PortBindings") or {}).keys())
+        env = container.get("Config", {}).get("Env") or []
 
         return {
             "image": container.get("Config", {}).get("Image"),
@@ -140,6 +191,7 @@ class SandboxRuntimeService:
             "working_dir": container.get("Config", {}).get("WorkingDir"),
             "command": container.get("Config", {}).get("Cmd") or [],
             "port_bindings": port_bindings,
+            "env": env,
         }
 
     async def inspect_image_id(self, image_ref: str) -> str | None:
