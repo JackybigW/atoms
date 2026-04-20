@@ -107,9 +107,6 @@ class SandboxRuntimeService:
             command,
         )
 
-    async def start_dev_server(self, container_name: str) -> tuple[int, str, str]:
-        return await self.exec(container_name, "/usr/local/bin/start-dev")
-
     async def start_preview_services(self, container_name: str) -> tuple[int, str, str]:
         return await self.exec(container_name, "/usr/local/bin/start-preview")
 

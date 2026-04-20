@@ -739,30 +739,6 @@ async def test_wait_for_service_caps_blocking_probe_to_remaining_budget(tmp_path
     assert elapsed < 0.15
 
 
-@pytest.mark.asyncio
-async def test_start_dev_server_execs_helper_command(tmp_path):
-    commands = []
-
-    async def fake_run(*args):
-        commands.append(args)
-        return 0, "launched pnpm run dev\n", ""
-
-    service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run)
-
-    result = await service.start_dev_server("atoms-user-123-42")
-
-    assert result == (0, "launched pnpm run dev\n", "")
-    assert commands == [
-        (
-            "docker",
-            "exec",
-            "-i",
-            "atoms-user-123-42",
-            "/bin/bash",
-            "-lc",
-            "/usr/local/bin/start-dev",
-        )
-    ]
 
 
 @pytest.mark.asyncio

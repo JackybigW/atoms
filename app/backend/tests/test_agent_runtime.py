@@ -152,12 +152,6 @@ class _FakeSandboxService:
     async def get_runtime_ports(self, container_name):
         return {"frontend_port": 55555, "backend_port": 55556, "preview_port": 55555}
 
-    async def start_dev_server(self, container_name):
-        self.dev_calls.append(container_name)
-        if self.dev_success:
-            return 0, "", ""
-        return 2, "", "start-dev: ATOMS_PROJECT_ID env var is required"
-
     async def start_preview_services(self, container_name):
         self.dev_calls.append(container_name)
         if self.dev_success:
