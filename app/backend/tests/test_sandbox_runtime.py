@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from core.database import Base
@@ -51,30 +52,81 @@ async def test_workspace_runtime_sessions_service_get_by_project():
 
 
 @pytest.mark.asyncio
+async def test_workspace_runtime_sessions_user_project_is_unique():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        async with session_maker() as db:
+            db.add(
+                WorkspaceRuntimeSessions(
+                    user_id="user-123",
+                    project_id=42,
+                    container_name="atoms-user-123-42",
+                    status="running",
+                )
+            )
+            await db.commit()
+
+            db.add(
+                WorkspaceRuntimeSessions(
+                    user_id="user-123",
+                    project_id=42,
+                    container_name="atoms-user-123-42-replacement",
+                    status="stopped",
+                )
+            )
+            with pytest.raises(IntegrityError):
+                await db.commit()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_ensure_runtime_builds_docker_run_command(tmp_path):
     commands = []
 
     async def fake_run(*args):
         commands.append(args)
-        return "container-id-123"
+        return 0, "container-id-123\n", ""
 
     service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run)
 
-    runtime = await service.ensure_runtime(
+    container_name = await service.ensure_runtime(
         user_id="user-123",
         project_id=42,
         host_root=tmp_path / "user-123" / "42",
     )
 
-    assert runtime["container_name"] == "atoms-user-123-42"
-    assert runtime["container_id"] == "container-id-123"
-    assert runtime["status"] == "running"
+    assert container_name == "atoms-user-123-42"
 
     joined = " ".join(commands[0])
     assert "docker run -d" in joined
     assert "-v" in joined
     assert str(tmp_path / "user-123" / "42") in joined
     assert "/workspace" in joined
+    assert "-p 0:3000" in joined
+    assert "-p 0:8000" in joined
+    assert "atoms-sandbox:latest" in joined
+
+
+@pytest.mark.asyncio
+async def test_ensure_runtime_raises_when_docker_run_fails(tmp_path):
+    async def fake_run(*args):
+        return 125, "", "docker run failed"
+
+    service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run)
+
+    with pytest.raises(RuntimeError, match="docker run failed"):
+        await service.ensure_runtime(
+            user_id="user-123",
+            project_id=42,
+            host_root=tmp_path / "user-123" / "42",
+        )
 
 
 @pytest.mark.asyncio
@@ -83,13 +135,13 @@ async def test_exec_uses_bash_lc_shape(tmp_path):
 
     async def fake_run(*args):
         commands.append(args)
-        return "ok"
+        return 0, "ok", ""
 
     service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run)
 
     result = await service.exec("atoms-user-123-42", "npm test")
 
-    assert result == "ok"
+    assert result == (0, "ok", "")
     assert commands == [
         (
             "docker",
@@ -104,6 +156,32 @@ async def test_exec_uses_bash_lc_shape(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_get_runtime_ports_parses_docker_port_output(tmp_path):
+    commands = []
+
+    async def fake_run(*args):
+        commands.append(args)
+        return (
+            0,
+            "3000/tcp -> 0.0.0.0:49153\n"
+            "3000/tcp -> [::]:49153\n"
+            "8000/tcp -> 0.0.0.0:49154\n",
+            "",
+        )
+
+    service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run)
+
+    ports = await service.get_runtime_ports("atoms-user-123-42")
+
+    assert commands == [("docker", "port", "atoms-user-123-42")]
+    assert ports == {
+        "frontend_port": 49153,
+        "backend_port": 49154,
+        "preview_port": 49153,
+    }
+
+
+@pytest.mark.asyncio
 async def test_run_command_collects_stdout(tmp_path):
     service = SandboxRuntimeService(project_root=tmp_path)
 
@@ -113,4 +191,4 @@ async def test_run_command_collects_stdout(tmp_path):
         "print('sandbox-ok')",
     )
 
-    assert result == "sandbox-ok"
+    assert result == (0, "sandbox-ok\n", "")

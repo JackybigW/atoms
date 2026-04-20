@@ -37,9 +37,8 @@ class WorkspaceRuntimeSessionsService:
                 select(WorkspaceRuntimeSessions)
                 .where(WorkspaceRuntimeSessions.user_id == user_id)
                 .where(WorkspaceRuntimeSessions.project_id == project_id)
-                .order_by(WorkspaceRuntimeSessions.id.desc())
             )
-            return result.scalars().first()
+            return result.scalar_one_or_none()
         except Exception:
             logger.exception(
                 "Error fetching workspace_runtime_sessions for user_id=%s project_id=%s",
