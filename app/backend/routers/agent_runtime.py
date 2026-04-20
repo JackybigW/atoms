@@ -13,6 +13,7 @@ from schemas.agent_runtime import AgentRunRequest
 from services.project_files import Project_filesService
 from services.project_workspace import ProjectWorkspaceService
 from services.sandbox_runtime import SandboxRuntimeService
+from services.workspace_runtime_sessions import WorkspaceRuntimeSessionsService
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -116,7 +117,11 @@ async def run_agent(
             task_prompt = (
                 f"You must work inside this workspace root: /workspace\n"
                 "Use absolute paths starting with /workspace for file edits, "
-                "and change into this directory before running bash commands.\n\n"
+                "and change into this directory before running bash commands.\n"
+                "After file edits, the backend will automatically run "
+                "/usr/local/bin/start-dev to launch the Vite dev server on port 3000.\n"
+                "Do not start the dev server yourself; focus on writing code and "
+                "one-off verification commands.\n\n"
                 f"User request:\n{request.prompt}"
             )
             result = await agent.run(task_prompt)
@@ -166,6 +171,76 @@ async def run_agent(
                 )
             except Exception as sync_exc:
                 logger.warning("Workspace sync failed: %s", sync_exc)
+
+            try:
+                returncode, _, stderr = await sandbox_service.start_dev_server(container_name)
+                if returncode != 0:
+                    stderr_tail = stderr.strip().splitlines()[-1] if stderr.strip() else ""
+                    await emit(
+                        {
+                            "type": "preview_failed",
+                            "reason": "start_dev_failed",
+                            "returncode": returncode,
+                            "stderr": stderr_tail,
+                        }
+                    )
+                else:
+                    ports = await sandbox_service.get_runtime_ports(container_name)
+                    frontend_port = ports.get("frontend_port")
+                    preview_port = ports.get("preview_port")
+                    backend_port = ports.get("backend_port")
+
+                    if not frontend_port:
+                        await emit(
+                            {
+                                "type": "preview_failed",
+                                "reason": "no_frontend_port",
+                            }
+                        )
+                    else:
+                        ready = await sandbox_service.wait_for_service(
+                            container_name=container_name,
+                            port=3000,
+                            timeout_seconds=60.0,
+                            poll_interval_seconds=1.0,
+                        )
+                        await WorkspaceRuntimeSessionsService(db).create(
+                            {
+                                "user_id": user_id,
+                                "project_id": project_id,
+                                "container_name": container_name,
+                                "status": "running" if ready else "starting",
+                                "preview_port": preview_port,
+                                "frontend_port": frontend_port,
+                                "backend_port": backend_port,
+                            }
+                        )
+                        if ready:
+                            await emit(
+                                {
+                                    "type": "preview_ready",
+                                    "preview_url": (
+                                        f"/api/v1/workspace-runtime/projects/{project_id}/preview/"
+                                    ),
+                                    "frontend_port": frontend_port,
+                                }
+                            )
+                        else:
+                            await emit(
+                                {
+                                    "type": "preview_failed",
+                                    "reason": "timeout",
+                                }
+                            )
+            except Exception as preview_exc:
+                logger.warning("Preview startup failed: %s", preview_exc)
+                await emit(
+                    {
+                        "type": "preview_failed",
+                        "reason": "exception",
+                        "error": str(preview_exc),
+                    }
+                )
 
             await emit(
                 {

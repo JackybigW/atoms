@@ -1,6 +1,7 @@
 import asyncio
 import subprocess
 import sys
+import time
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from core.database import Base
 from models.workspace_runtime_sessions import WorkspaceRuntimeSessions
+import services.sandbox_runtime as sandbox_runtime_module
 from services.sandbox_runtime import SandboxRuntimeService
 from services.workspace_runtime_sessions import WorkspaceRuntimeSessionsService
 
@@ -299,6 +301,29 @@ async def test_ensure_runtime_builds_docker_run_command(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_ensure_runtime_injects_project_id_env_var(tmp_path):
+    commands = []
+    workspace_root = tmp_path / "user-1" / "7"
+    workspace_root.mkdir(parents=True)
+
+    async def fake_run(*args):
+        commands.append(args)
+        return 0, "container-id-123\n", ""
+
+    service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run)
+
+    await service.ensure_runtime(
+        user_id="user-1",
+        project_id=7,
+        host_root=workspace_root,
+    )
+
+    run_command = commands[0]
+    env_index = run_command.index("-e")
+    assert run_command[env_index + 1] == "ATOMS_PROJECT_ID=7"
+
+
+@pytest.mark.asyncio
 async def test_ensure_runtime_raises_when_docker_run_fails(tmp_path):
     workspace_root = tmp_path / "user-123" / "42"
     workspace_root.mkdir(parents=True)
@@ -329,7 +354,7 @@ async def test_ensure_runtime_reuses_existing_container_name(tmp_path):
         if args == ("docker", "inspect", "atoms-user-123-42"):
             return (
                 0,
-                '[{"Image":"sha256:expected","Config":{"Image":"atoms-sandbox:latest","WorkingDir":"/workspace","Cmd":["sleep","infinity"]},"HostConfig":{"PortBindings":{"3000/tcp":[{"HostPort":"49153"}],"8000/tcp":[{"HostPort":"49154"}]}},"Mounts":[{"Destination":"/workspace","Source":"'
+                '[{"Image":"sha256:expected","Config":{"Image":"atoms-sandbox:latest","WorkingDir":"/workspace","Cmd":["sleep","infinity"],"Env":["ATOMS_PROJECT_ID=42"]},"HostConfig":{"PortBindings":{"3000/tcp":[{"HostPort":"49153"}],"8000/tcp":[{"HostPort":"49154"}]}},"Mounts":[{"Destination":"/workspace","Source":"'
                 + str(workspace_root)
                 + '"}]}]',
                 "",
@@ -368,7 +393,7 @@ async def test_ensure_runtime_reuses_existing_container_with_var_path_alias(tmp_
         if args == ("docker", "inspect", "atoms-user-123-42"):
             return (
                 0,
-                '[{"Image":"sha256:expected","Config":{"Image":"atoms-sandbox:latest","WorkingDir":"/workspace","Cmd":["sleep","infinity"]},"HostConfig":{"PortBindings":{"3000/tcp":[{"HostPort":"49153"}],"8000/tcp":[{"HostPort":"49154"}]}},"Mounts":[{"Destination":"/workspace","Source":"'
+                '[{"Image":"sha256:expected","Config":{"Image":"atoms-sandbox:latest","WorkingDir":"/workspace","Cmd":["sleep","infinity"],"Env":["ATOMS_PROJECT_ID=42"]},"HostConfig":{"PortBindings":{"3000/tcp":[{"HostPort":"49153"}],"8000/tcp":[{"HostPort":"49154"}]}},"Mounts":[{"Destination":"/workspace","Source":"'
                 + docker_reported_root
                 + '"}]}]',
                 "",
@@ -447,6 +472,36 @@ async def test_ensure_runtime_rejects_conflicting_existing_container(tmp_path):
         await service.ensure_runtime(
             user_id="user-123",
             project_id=42,
+            host_root=workspace_root,
+        )
+
+
+@pytest.mark.asyncio
+async def test_ensure_runtime_rejects_existing_container_with_wrong_project_env(tmp_path):
+    workspace_root = tmp_path / "user-1" / "7"
+    workspace_root.mkdir(parents=True)
+
+    async def fake_run(*args):
+        if args[:4] == ("docker", "run", "-d", "--name"):
+            return 125, "", 'Conflict. The container name "/atoms-user-1-7" is already in use.'
+        if args == ("docker", "inspect", "atoms-user-1-7"):
+            return (
+                0,
+                '[{"Image":"sha256:expected","Config":{"Image":"atoms-sandbox:latest","WorkingDir":"/workspace","Cmd":["sleep","infinity"],"Env":["ATOMS_PROJECT_ID=999"]},"HostConfig":{"PortBindings":{"3000/tcp":[{"HostPort":"49153"}],"8000/tcp":[{"HostPort":"49154"}]}},"Mounts":[{"Destination":"/workspace","Source":"'
+                + str(workspace_root)
+                + '"}]}]',
+                "",
+            )
+        if args == ("docker", "image", "inspect", "atoms-sandbox:latest"):
+            return 0, '[{"Id":"sha256:expected"}]', ""
+        raise AssertionError(f"unexpected command: {args}")
+
+    service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run)
+
+    with pytest.raises(RuntimeError, match="does not match"):
+        await service.ensure_runtime(
+            user_id="user-1",
+            project_id=7,
             host_root=workspace_root,
         )
 
@@ -531,6 +586,148 @@ async def test_exec_uses_bash_lc_shape(tmp_path):
             "/bin/bash",
             "-lc",
             "npm test",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_wait_for_service_returns_true_after_probe_succeeds(tmp_path):
+    commands = []
+    responses = [
+        (7, "", "connection refused"),
+        (7, "", "connection refused"),
+        (0, "", ""),
+    ]
+
+    async def fake_run(*args):
+        commands.append(args)
+        return responses.pop(0)
+
+    service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run)
+
+    result = await service.wait_for_service(
+        "atoms-user-123-42",
+        3000,
+        timeout_seconds=1.0,
+        poll_interval_seconds=0.001,
+    )
+
+    assert result is True
+    assert len(commands) == 3
+    for command in commands:
+        assert command[:6] == (
+            "docker",
+            "exec",
+            "-i",
+            "atoms-user-123-42",
+            "/bin/bash",
+            "-lc",
+        )
+        assert "http://localhost:3000/" in command[-1]
+        assert "--max-time " in command[-1]
+        probe_timeout = float(command[-1].split("--max-time ", 1)[1].split(" ", 1)[0])
+        assert 0 < probe_timeout <= 1.0
+
+
+@pytest.mark.asyncio
+async def test_wait_for_service_returns_false_after_timeout(tmp_path, monkeypatch):
+    commands = []
+    monotonic_values = iter([100.0, 100.1, 100.2, 100.31, 100.31, 100.31])
+
+    async def fake_run(*args):
+        commands.append(args)
+        return 7, "", "connection refused"
+
+    async def fake_sleep(_seconds):
+        return None
+
+    def fake_monotonic():
+        try:
+            return next(monotonic_values)
+        except StopIteration:
+            return 100.31
+
+    monkeypatch.setattr(sandbox_runtime_module.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(sandbox_runtime_module.asyncio, "sleep", fake_sleep)
+
+    service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run)
+
+    result = await service.wait_for_service(
+        "atoms-user-123-42",
+        3000,
+        timeout_seconds=0.25,
+        poll_interval_seconds=0.01,
+    )
+
+    assert result is False
+    assert commands
+    for command in commands:
+        assert command[:6] == (
+            "docker",
+            "exec",
+            "-i",
+            "atoms-user-123-42",
+            "/bin/bash",
+            "-lc",
+        )
+        assert "http://localhost:3000/" in command[-1]
+        probe_timeout = float(command[-1].split("--max-time ", 1)[1].split(" ", 1)[0])
+        assert 0 < probe_timeout <= 0.25
+
+
+@pytest.mark.asyncio
+async def test_wait_for_service_caps_blocking_probe_to_remaining_budget(tmp_path):
+    commands = []
+
+    async def fake_run(*args):
+        commands.append(args)
+        await asyncio.sleep(0.2)
+        return 7, "", "connection refused"
+
+    service = SandboxRuntimeService(
+        project_root=tmp_path,
+        run_command=fake_run,
+        command_timeout_seconds=5.0,
+    )
+
+    started_at = time.monotonic()
+    result = await service.wait_for_service(
+        "atoms-user-123-42",
+        3000,
+        timeout_seconds=0.05,
+        poll_interval_seconds=0.001,
+    )
+    elapsed = time.monotonic() - started_at
+
+    assert result is False
+    assert len(commands) == 1
+    probe_timeout = float(commands[0][-1].split("--max-time ", 1)[1].split(" ", 1)[0])
+    assert 0 < probe_timeout <= 0.05
+    assert elapsed < 0.15
+
+
+@pytest.mark.asyncio
+async def test_start_dev_server_execs_helper_command(tmp_path):
+    commands = []
+
+    async def fake_run(*args):
+        commands.append(args)
+        return 0, "launched pnpm run dev\n", ""
+
+    service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run)
+
+    result = await service.start_dev_server("atoms-user-123-42")
+
+    assert result == (0, "launched pnpm run dev\n", "")
+    assert commands == [
+        (
+            "docker",
+            "exec",
+            "-i",
+            "atoms-user-123-42",
+            "/bin/bash",
+            "-lc",
+            "/usr/local/bin/start-dev",
         )
     ]
 

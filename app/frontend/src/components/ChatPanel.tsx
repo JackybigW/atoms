@@ -70,7 +70,7 @@ interface ChatPanelProps {
 
 export default function ChatPanel({ mode }: ChatPanelProps) {
   const { user, isAuthenticated } = useAuth();
-  const { projectId, addTerminalLog, reloadFiles, setPreviewUrl } = useWorkspace();
+  const { projectId, addTerminalLog, reloadFiles, setPreviewUrl, reloadPreview } = useWorkspace();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -212,12 +212,21 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
       }
 
       if (type === "preview_ready") {
-        setPreviewUrl(String(payload.preview_url || ""));
-        addTerminalLog(`$ preview ready: ${String(payload.preview_url || "")}`);
+        const previewUrl = String(payload.preview_url || "");
+        setPreviewUrl(previewUrl);
+        reloadPreview();
+        addTerminalLog(`$ preview ready: ${previewUrl}`);
+        return;
+      }
+
+      if (type === "preview_failed") {
+        setPreviewUrl("");
+        reloadPreview();
+        addTerminalLog(`$ preview failed: ${String(payload.reason || "unknown")}`);
         return;
       }
     },
-    [addTerminalLog, appendMessage, selectedModel, reloadFiles, setPreviewUrl]
+    [addTerminalLog, appendMessage, selectedModel, reloadFiles, setPreviewUrl, reloadPreview]
   );
 
   const handleSend = async () => {
