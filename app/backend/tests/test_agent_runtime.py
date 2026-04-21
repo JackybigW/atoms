@@ -9,6 +9,37 @@ from openmanus_runtime.streaming import StreamingSWEAgent
 
 from routers.agent_runtime import _serialize_agent_history, router
 from schemas.auth import UserResponse
+from services.agent_bootstrap import build_bootstrap_context, classify_user_request
+
+
+def test_classify_user_request_flags_implementation_mode():
+    result = classify_user_request("帮我新增一个 billing 页面和后端接口")
+    assert result.mode == "implementation"
+    assert result.requires_backend_readme is True
+
+
+def test_classify_user_request_leaves_smalltalk_in_conversation_mode():
+    result = classify_user_request("你好")
+    assert result.mode == "conversation"
+    assert result.requires_draft_plan is False
+
+
+def test_classify_user_request_ignores_ai_substring_in_unrelated_words():
+    result = classify_user_request("please maintain the homepage copy")
+    assert result.mode == "conversation"
+    assert result.requires_backend_readme is False
+
+
+def test_classify_user_request_ignores_email_in_general_requests():
+    result = classify_user_request("please email me the notes")
+    assert result.mode == "conversation"
+    assert result.requires_backend_readme is False
+
+
+def test_build_bootstrap_context_defaults_to_classification():
+    result = build_bootstrap_context("帮我新增一个 billing 页面和后端接口")
+    assert result.mode == "implementation"
+    assert result.requires_draft_plan is True
 
 
 class FakeAgent:

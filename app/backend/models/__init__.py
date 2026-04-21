@@ -12,6 +12,7 @@ from models.auth import OIDCState, User
 from models.credit_usage import Credit_usage
 from models.messages import Messages
 from models.agent_realtime_tickets import AgentRealtimeTickets
+from models.agent_tasks import AgentTasks
 from models.project_files import Project_files
 from models.projects import Projects
 from models.user_profiles import User_profiles
@@ -22,6 +23,7 @@ __all__ = [
     "User",
     "Credit_usage",
     "AgentRealtimeTickets",
+    "AgentTasks",
     "Messages",
     "Project_files",
     "Projects",
