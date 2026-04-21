@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -14,7 +16,14 @@ class _FakeCurrentUser:
         self.role = "user"
 
 
+def _configure_jwt_env(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", "test-secret-key")
+    monkeypatch.setenv("JWT_ALGORITHM", "HS256")
+    monkeypatch.setenv("JWT_EXPIRE_MINUTES", "60")
+
+
 def _make_client(monkeypatch, db=None):
+    _configure_jwt_env(monkeypatch)
     from dependencies.auth import get_current_user
     from core.database import get_db
 
@@ -53,6 +62,7 @@ class _FakeDB:
 
 
 def test_issue_session_ticket_and_reject_invalid_websocket(monkeypatch):
+    _configure_jwt_env(monkeypatch)
     service = AgentRealtimeService()
     monkeypatch.setattr("routers.agent_realtime.ProjectsService", _FakeProjectsService)
     monkeypatch.setattr("routers.agent_realtime.get_agent_realtime_service", lambda: service)
@@ -67,6 +77,11 @@ def test_issue_session_ticket_and_reject_invalid_websocket(monkeypatch):
     ticket = payload["ticket"]
     assert isinstance(ticket, str)
     assert ticket
+
+    consumed = asyncio.run(service.consume_ticket(ticket))
+    assert consumed is not None
+    assert consumed.model == "gpt-4.1"
+    assert consumed.project_id == 42
 
     with client.websocket_connect("/api/v1/agent/session/ws?ticket=invalid-ticket") as websocket:
         message = websocket.receive_json()
@@ -88,6 +103,7 @@ def test_issue_session_ticket_and_reject_invalid_websocket(monkeypatch):
 
 
 def test_issue_session_ticket_denies_unowned_project(monkeypatch):
+    _configure_jwt_env(monkeypatch)
     monkeypatch.setattr("routers.agent_realtime.ProjectsService", _FakeProjectsService)
     client = _make_client(monkeypatch)
 
@@ -96,16 +112,16 @@ def test_issue_session_ticket_denies_unowned_project(monkeypatch):
     assert response.status_code == 404
 
 
-def test_agent_realtime_service_preserves_model_through_consumption():
-    service = AgentRealtimeService()
+def test_agent_realtime_service_rejects_invalid_or_expired_tickets(monkeypatch):
+    _configure_jwt_env(monkeypatch)
 
-    import asyncio
+    invalid_service = AgentRealtimeService()
+    assert asyncio.run(invalid_service.consume_ticket("not-a-valid-ticket")) is None
 
-    async def _run():
-        ticket = await service.issue_ticket(user_id="user-1", project_id=42, model="gpt-4.1")
-        assert ticket.model == "gpt-4.1"
-        consumed = await service.consume_ticket(ticket.ticket)
-        assert consumed is not None
-        assert consumed.model == "gpt-4.1"
+    expired_service = AgentRealtimeService(ttl_minutes=-1)
 
-    asyncio.run(_run())
+    async def _issue_and_consume_expired():
+        ticket = await expired_service.issue_ticket(user_id="user-1", project_id=42, model="gpt-4.1")
+        return await expired_service.consume_ticket(ticket.ticket)
+
+    assert asyncio.run(_issue_and_consume_expired()) is None
