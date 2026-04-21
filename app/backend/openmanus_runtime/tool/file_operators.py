@@ -1,9 +1,10 @@
 """File operation interfaces and implementations for local and sandbox environments."""
 
 import asyncio
+from inspect import isawaitable
 import shlex
 from pathlib import Path
-from typing import Optional, Protocol, Tuple, Union, runtime_checkable
+from typing import Any, Callable, Optional, Protocol, Tuple, Union, runtime_checkable
 
 from openmanus_runtime.config import SandboxSettings
 from openmanus_runtime.exceptions import ToolError
@@ -97,9 +98,15 @@ class LocalFileOperator(FileOperator):
 class ProjectFileOperator(LocalFileOperator):
     """File operator that maps container-relative paths (e.g. /workspace/…) to a host directory."""
 
-    def __init__(self, host_root: Path, container_root: Path):
+    def __init__(
+        self,
+        host_root: Path,
+        container_root: Path,
+        event_sink: Callable[[dict[str, object]], Any] | None = None,
+    ):
         self.host_root = Path(host_root)
         self.container_root = Path(container_root)
+        self._event_sink = event_sink
 
     def _to_host_path(self, path: PathLike) -> Path:
         raw = Path(path)
@@ -121,7 +128,17 @@ class ProjectFileOperator(LocalFileOperator):
     async def write_file(self, path: PathLike, content: str) -> None:
         host_path = self._to_host_path(path)
         host_path.parent.mkdir(parents=True, exist_ok=True)
-        return await super().write_file(host_path, content)
+        await super().write_file(host_path, content)
+        if self._event_sink is not None:
+            result = self._event_sink(
+                {
+                    "type": "file.snapshot",
+                    "path": host_path.relative_to(self.host_root).as_posix(),
+                    "content": content,
+                }
+            )
+            if isawaitable(result):
+                await result
 
     async def is_directory(self, path: PathLike) -> bool:
         return await super().is_directory(self._to_host_path(path))

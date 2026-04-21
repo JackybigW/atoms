@@ -6,7 +6,18 @@ import { WorkspaceProvider, useWorkspace } from "./WorkspaceContext";
 import type { WorkspacePreviewBundle } from "@/lib/workspaceRuntime";
 
 function WorkspaceConsumer({ projectId }: { projectId: number | null }) {
-  const { previewKey, reloadPreview, preview, setPreview, setProjectId } = useWorkspace();
+  const {
+    previewKey,
+    reloadPreview,
+    preview,
+    setPreview,
+    setProjectId,
+    applyFileSnapshot,
+    files,
+    applyRealtimeEvent,
+    sessionStatus,
+    progressItems,
+  } = useWorkspace();
 
   useEffect(() => {
     setProjectId(projectId);
@@ -16,8 +27,44 @@ function WorkspaceConsumer({ projectId }: { projectId: number | null }) {
     <div>
       <div data-testid="preview-key">{previewKey}</div>
       <div data-testid="preview-url">{preview.preview_frontend_url ?? ""}</div>
+      <div data-testid="file-content">{files.find((file) => file.file_path === "src/App.tsx")?.content ?? ""}</div>
+      <div data-testid="session-status">{sessionStatus}</div>
+      <div data-testid="progress-items">{progressItems.join(" | ")}</div>
       <button onClick={reloadPreview} type="button">
         Reload preview
+      </button>
+      <button
+        onClick={() =>
+          applyFileSnapshot({
+            path: "src/App.tsx",
+            content: "export default function App() { return <main />; }",
+          })
+        }
+        type="button"
+      >
+        Apply file snapshot
+      </button>
+      <button
+        onClick={() =>
+          applyRealtimeEvent({
+            type: "session.state",
+            status: "running",
+          })
+        }
+        type="button"
+      >
+        Apply session state
+      </button>
+      <button
+        onClick={() =>
+          applyRealtimeEvent({
+            type: "progress",
+            label: "Editing src/App.tsx",
+          })
+        }
+        type="button"
+      >
+        Apply progress
       </button>
       <button
         onClick={() =>
@@ -98,5 +145,35 @@ describe("WorkspaceContext", () => {
     });
 
     expect(screen.getByTestId("preview-url")).toHaveTextContent("http://localhost:4173");
+  });
+
+  it("applies file.snapshot updates without reloading files", () => {
+    render(
+      <WorkspaceProvider>
+        <WorkspaceConsumer projectId={1} />
+      </WorkspaceProvider>
+    );
+
+    act(() => {
+      screen.getByRole("button", { name: "Apply file snapshot" }).click();
+    });
+
+    expect(screen.getByTestId("file-content")).toHaveTextContent("return <main />");
+  });
+
+  it("stores realtime session state and progress items", () => {
+    render(
+      <WorkspaceProvider>
+        <WorkspaceConsumer projectId={1} />
+      </WorkspaceProvider>
+    );
+
+    act(() => {
+      screen.getByRole("button", { name: "Apply session state" }).click();
+      screen.getByRole("button", { name: "Apply progress" }).click();
+    });
+
+    expect(screen.getByTestId("session-status")).toHaveTextContent("running");
+    expect(screen.getByTestId("progress-items")).toHaveTextContent("Editing src/App.tsx");
   });
 });

@@ -41,6 +41,27 @@ async def test_project_file_operator_write_maps_container_paths(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_project_file_operator_emits_snapshot_on_write(tmp_path):
+    events: list[dict[str, object]] = []
+    operator = ProjectFileOperator(
+        host_root=tmp_path / "user-1" / "1",
+        container_root=Path("/workspace"),
+        event_sink=events.append,
+    )
+    operator.host_root.mkdir(parents=True, exist_ok=True)
+
+    await operator.write_file("/workspace/src/App.tsx", "export default function App() {}")
+
+    assert events == [
+        {
+            "type": "file.snapshot",
+            "path": "src/App.tsx",
+            "content": "export default function App() {}",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_project_file_operator_rejects_path_outside_workspace(tmp_path):
     from openmanus_runtime.exceptions import ToolError
 

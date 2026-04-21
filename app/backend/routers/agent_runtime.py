@@ -9,13 +9,10 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Request
 from openmanus_runtime.schema import Message
 from openmanus_runtime.streaming import StreamingSWEAgent, build_agent_llm
-from openmanus_runtime.tool.bash import ContainerBashSession
-from openmanus_runtime.tool.file_operators import ProjectFileOperator
 from schemas.agent_runtime import AgentRunRequest
+from services.engineer_runtime import run_engineer_session
 from services.preview_contract import load_preview_contract
 from services.preview_sessions import build_preview_urls, new_preview_session_fields
-from services.project_files import Project_filesService
-from services.messages import MessagesService
 from services.project_workspace import ProjectWorkspaceService
 from services.sandbox_runtime import SandboxRuntimeService
 from services.workspace_runtime_sessions import WorkspaceRuntimeSessionsService
@@ -88,333 +85,26 @@ async def run_agent(
 
     async def run_task() -> None:
         try:
-            user_id = str(current_user.id)
-            project_id = request.project_id
             logger.info("[agent:%s] run_task started", trace_id)
-
-            # --- Resolve workspace paths and materialize project files ---
-            workspace_service = _get_workspace_service()
-            paths = workspace_service.resolve_paths(user_id=user_id, project_id=project_id)
-            logger.info("[agent:%s] workspace resolved host_root=%s", trace_id, paths.host_root)
-
-            files_service = Project_filesService(db)
-            files_result = await files_service.get_list(
-                skip=0,
-                limit=10000,
-                user_id=user_id,
-                query_dict={"project_id": project_id},
+            success = await run_engineer_session(
+                db=db,
+                user_id=str(current_user.id),
+                project_id=request.project_id,
+                prompt=request.prompt,
+                model=request.model,
+                event_sink=emit,
+                trace_id=trace_id,
+                workspace_service_factory=_get_workspace_service,
+                sandbox_service_factory=_get_sandbox_service,
+                agent_cls=StreamingSWEAgent,
+                llm_builder=build_agent_llm,
+                history_serializer=_serialize_agent_history,
+                workspace_runtime_sessions_service_cls=WorkspaceRuntimeSessionsService,
+                preview_session_fields_factory=new_preview_session_fields,
+                preview_url_builder=build_preview_urls,
+                preview_contract_loader=load_preview_contract,
             )
-            file_records = [
-                {
-                    "file_path": f.file_path,
-                    "content": f.content,
-                    "is_directory": f.is_directory,
-                }
-                for f in files_result["items"]
-            ]
-            workspace_service.materialize_files(paths.host_root, file_records)
-            logger.info("[agent:%s] materialized %s project files", trace_id, len(file_records))
-
-            messages_service = MessagesService(db)
-            message_history_result = await messages_service.get_list(
-                skip=0,
-                limit=200,
-                user_id=user_id,
-                query_dict={"project_id": project_id},
-                sort="created_at",
-            )
-            persisted_history = [
-                {
-                    "role": message.role,
-                    "content": message.content,
-                    "agent": message.agent,
-                    "model": message.model,
-                    "created_at": message.created_at.isoformat() if message.created_at else None,
-                }
-                for message in message_history_result["items"]
-            ]
-            logger.info(
-                "[agent:%s] persisted message history count=%s history=%s",
-                trace_id,
-                len(persisted_history),
-                json.dumps(persisted_history, ensure_ascii=False),
-            )
-
-            # --- Ensure sandbox container is running ---
-            sandbox_service = _get_sandbox_service()
-            try:
-                container_name = await sandbox_service.ensure_runtime(
-                    user_id=user_id,
-                    project_id=project_id,
-                    host_root=paths.host_root,
-                )
-                logger.info("[agent:%s] sandbox ready container=%s", trace_id, container_name)
-            except Exception as exc:
-                logger.exception("[agent:%s] sandbox startup failed", trace_id)
-                await emit({"type": "error", "status": "failure", "error": f"Could not start sandbox: {exc}"})
-                await queue.put(None)
-                return
-
-            # --- Build project-scoped tools ---
-            file_operator = ProjectFileOperator(
-                host_root=paths.host_root,
-                container_root=paths.container_root,
-            )
-
-            bash_session = ContainerBashSession(
-                runtime_service=sandbox_service,
-                container_name=container_name,
-            )
-
-            llm = build_agent_llm(request.model)
-            logger.info("[agent:%s] llm constructed model=%s", trace_id, request.model)
-            agent = StreamingSWEAgent.build_for_workspace(
-                llm=llm,
-                event_emitter=emit,
-                file_operator=file_operator,
-                bash_session=bash_session,  # always a ContainerBashSession now
-            )
-            logger.info("[agent:%s] agent built name=%s", trace_id, agent.name)
-
-            await emit(
-                {
-                    "type": "session",
-                    "agent": agent.name,
-                    "workspace_root": str(paths.host_root),
-                    "status": "started",
-                }
-            )
-
-            task_prompt = (
-                f"You must work inside this workspace root: /workspace\n"
-                "Use absolute paths starting with /workspace for file edits, "
-                "and change into this directory before running bash commands.\n"
-                "After file edits, the backend will automatically run "
-                "/usr/local/bin/start-preview to launch the preview services.\n"
-                "The preview configuration is declared in .atoms/preview.json "
-                "(frontend command, optional backend command, healthcheck paths).\n"
-                "If your app has a backend API, set the VITE_ATOMS_PREVIEW_BACKEND_BASE "
-                "environment variable in the frontend so it can reach the backend.\n"
-                "Do not start the preview services yourself; focus on writing code and "
-                "one-off verification commands.\n\n"
-                f"User request:\n{request.prompt}"
-            )
-            logger.info("[agent:%s] agent.run started", trace_id)
-            result = await agent.run(task_prompt)
-            logger.info("[agent:%s] agent.run completed", trace_id)
-            agent_messages = getattr(agent, "messages", [])
-            logger.info(
-                "[agent:%s] agent memory history=%s",
-                trace_id,
-                json.dumps(_serialize_agent_history(agent_messages), ensure_ascii=False),
-            )
-
-            # --- Snapshot and sync changed files back to DB ---
-            try:
-                snapshot = workspace_service.snapshot_files(paths.host_root)
-                changed_paths: list[str] = []
-                logger.info("[agent:%s] snapshot captured files=%s", trace_id, len(snapshot))
-
-                for rel_path, file_info in snapshot.items():
-                    file_name = Path(rel_path).name
-                    # Try to find existing record for this path
-                    existing_list = await files_service.get_list(
-                        skip=0,
-                        limit=1,
-                        user_id=user_id,
-                        query_dict={"project_id": project_id, "file_path": rel_path},
-                    )
-                    existing = existing_list["items"]
-                    if existing:
-                        existing_record = existing[0]
-                        if existing_record.content != file_info["content"]:
-                            await files_service.update(
-                                existing_record.id,
-                                {"content": file_info["content"]},
-                                user_id=user_id,
-                            )
-                            changed_paths.append(rel_path)
-                    else:
-                        await files_service.create(
-                            {
-                                "project_id": project_id,
-                                "file_path": rel_path,
-                                "file_name": file_name,
-                                "content": file_info["content"],
-                                "is_directory": False,
-                            },
-                            user_id=user_id,
-                        )
-                        changed_paths.append(rel_path)
-
-                await emit(
-                    {
-                        "type": "workspace_sync",
-                        "changed_files": changed_paths,
-                    }
-                )
-                logger.info("[agent:%s] workspace sync updated_files=%s", trace_id, len(changed_paths))
-            except Exception as sync_exc:
-                logger.warning("[agent:%s] workspace sync failed: %s", trace_id, sync_exc)
-
-            try:
-                sessions_service = WorkspaceRuntimeSessionsService(db)
-                existing_session = await sessions_service.get_by_project(
-                    user_id=user_id,
-                    project_id=project_id,
-                )
-                if existing_session and existing_session.preview_session_key:
-                    session_key_fields: dict[str, object] = {
-                        "preview_session_key": existing_session.preview_session_key,
-                    }
-                    if existing_session.preview_expires_at is not None:
-                        session_key_fields["preview_expires_at"] = existing_session.preview_expires_at
-                else:
-                    session_key_fields = new_preview_session_fields()
-
-                preview_urls = build_preview_urls(str(session_key_fields["preview_session_key"]))
-                preview_env = {
-                    "ATOMS_PREVIEW_FRONTEND_BASE": preview_urls["preview_frontend_url"],
-                    "ATOMS_PREVIEW_BACKEND_BASE": preview_urls["preview_backend_url"],
-                    "VITE_ATOMS_PREVIEW_FRONTEND_BASE": preview_urls["preview_frontend_url"],
-                    "VITE_ATOMS_PREVIEW_BACKEND_BASE": preview_urls["preview_backend_url"],
-                }
-
-                logger.info("[agent:%s] starting preview services", trace_id)
-                returncode, _, stderr = await sandbox_service.start_preview_services(
-                    container_name,
-                    env=preview_env,
-                )
-                if returncode != 0:
-                    stderr_tail = stderr.strip().splitlines()[-1] if stderr.strip() else ""
-                    logger.warning(
-                        "[agent:%s] preview start failed returncode=%s stderr=%s",
-                        trace_id,
-                        returncode,
-                        stderr_tail,
-                    )
-                    await emit(
-                        {
-                            "type": "preview_failed",
-                            "reason": "start_preview_failed",
-                            "returncode": returncode,
-                            "stderr": stderr_tail,
-                        }
-                    )
-                else:
-                    ports = await sandbox_service.get_runtime_ports(container_name)
-                    frontend_port = ports.get("frontend_port")
-                    preview_port = ports.get("preview_port")
-                    backend_port = ports.get("backend_port")
-                    logger.info(
-                        "[agent:%s] runtime ports frontend=%s backend=%s preview=%s",
-                        trace_id,
-                        frontend_port,
-                        backend_port,
-                        preview_port,
-                    )
-
-                    if not frontend_port:
-                        logger.warning("[agent:%s] preview failed no frontend port", trace_id)
-                        await emit(
-                            {
-                                "type": "preview_failed",
-                                "reason": "no_frontend_port",
-                            }
-                        )
-                    else:
-                        # Load preview contract for healthcheck paths
-                        contract = load_preview_contract(paths.host_root)
-                        frontend_health_path = contract.frontend.healthcheck_path if contract else "/"
-                        backend_health_path = (
-                            contract.backend.healthcheck_path if contract and contract.backend else "/health"
-                        )
-
-                        logger.info("[agent:%s] waiting for frontend service path=%s", trace_id, frontend_health_path)
-                        frontend_ready = await sandbox_service.wait_for_service(
-                            container_name=container_name,
-                            port=3000,
-                            path=frontend_health_path,
-                            timeout_seconds=60.0,
-                            poll_interval_seconds=1.0,
-                        )
-                        logger.info("[agent:%s] frontend wait completed ready=%s", trace_id, frontend_ready)
-
-                        backend_ready = False
-                        if contract and contract.backend:
-                            logger.info("[agent:%s] waiting for backend service path=%s", trace_id, backend_health_path)
-                            backend_ready = await sandbox_service.wait_for_service(
-                                container_name=container_name,
-                                port=8000,
-                                path=backend_health_path,
-                                timeout_seconds=60.0,
-                                poll_interval_seconds=1.0,
-                            )
-                            logger.info("[agent:%s] backend wait completed ready=%s", trace_id, backend_ready)
-
-                        if not frontend_ready:
-                            await emit({"type": "preview_failed", "reason": "timeout"})
-                        else:
-                            # Build or update preview session
-                            backend_status = "not_configured"
-                            if contract and contract.backend:
-                                backend_status = "running" if backend_ready else "stopped"
-
-                            session = await sessions_service.create(
-                                {
-                                    **session_key_fields,
-                                    "user_id": user_id,
-                                    "project_id": project_id,
-                                    "container_name": container_name,
-                                    "status": "running",
-                                    "preview_port": preview_port,
-                                    "frontend_port": frontend_port,
-                                    "backend_port": backend_port,
-                                    "frontend_status": "running",
-                                    "backend_status": backend_status,
-                                }
-                            )
-                            logger.info(
-                                "[agent:%s] preview ready session_key=%s",
-                                trace_id,
-                                session.preview_session_key,
-                            )
-                            await emit(
-                                {
-                                    "type": "preview_ready",
-                                    "preview_session_key": session.preview_session_key,
-                                    "preview_expires_at": (
-                                        session.preview_expires_at.isoformat()
-                                        if session.preview_expires_at
-                                        else None
-                                    ),
-                                    "preview_frontend_url": preview_urls["preview_frontend_url"],
-                                    "preview_backend_url": preview_urls["preview_backend_url"],
-                                    "frontend_port": frontend_port,
-                                    "backend_port": backend_port,
-                                    "frontend_status": session.frontend_status,
-                                    "backend_status": session.backend_status,
-                                }
-                            )
-            except Exception as preview_exc:
-                logger.exception("[agent:%s] preview startup failed", trace_id)
-                await emit(
-                    {
-                        "type": "preview_failed",
-                        "reason": "exception",
-                        "error": str(preview_exc),
-                    }
-                )
-
-            await emit(
-                {
-                    "type": "done",
-                    "agent": agent.name,
-                    "status": "success",
-                    "result": result,
-                }
-            )
-            logger.info("[agent:%s] run_task finished successfully", trace_id)
+            logger.info("[agent:%s] run_task finished success=%s", trace_id, success)
         except Exception as exc:
             logger.exception("[agent:%s] run_task failed", trace_id)
             await emit(

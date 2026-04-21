@@ -225,3 +225,105 @@ def test_issue_session_ticket_rejects_overlong_model(monkeypatch, tmp_path):
         assert response.status_code == 422
 
     asyncio.run(engine.dispose())
+
+
+def test_websocket_user_message_streams_engineer_reply(monkeypatch, tmp_path):
+    app, engine, _, _ = _build_environment(tmp_path, monkeypatch)
+
+    async def fake_run_engineer_session(*, event_sink, **kwargs):
+        await event_sink({"type": "assistant", "agent": "swe", "content": "Working on auth flow"})
+
+    monkeypatch.setattr("routers.agent_realtime.run_engineer_session", fake_run_engineer_session, raising=False)
+
+    with TestClient(app) as client:
+        ticket = client.post("/api/v1/agent/session-ticket", json={"project_id": 42, "model": "gpt-4.1"}).json()[
+            "ticket"
+        ]
+
+        with client.websocket_connect(f"/api/v1/agent/session/ws?ticket={ticket}") as websocket:
+            idle_state = websocket.receive_json()
+            assert idle_state == {
+                "type": "session.state",
+                "status": "idle",
+                "project_id": 42,
+                "assistant_role": "engineer",
+            }
+
+            websocket.send_json({"type": "user.message", "project_id": 42, "prompt": "build auth"})
+
+            running_state = websocket.receive_json()
+            assert running_state == {
+                "type": "session.state",
+                "status": "running",
+                "project_id": 42,
+                "assistant_role": "engineer",
+            }
+
+            assistant_delta = websocket.receive_json()
+            assert assistant_delta == {
+                "type": "assistant.delta",
+                "agent": "swe",
+                "content": "Working on auth flow",
+            }
+
+            assistant_done = websocket.receive_json()
+            assert assistant_done == {
+                "type": "assistant.message_done",
+                "agent": "swe",
+            }
+
+            completed_state = websocket.receive_json()
+            assert completed_state == {
+                "type": "session.state",
+                "status": "completed",
+                "project_id": 42,
+                "assistant_role": "engineer",
+            }
+
+    asyncio.run(engine.dispose())
+
+
+def test_websocket_run_stop_emits_run_stopped(monkeypatch, tmp_path):
+    app, engine, _, _ = _build_environment(tmp_path, monkeypatch)
+
+    async def fake_long_running_engineer_session(*, stop_event=None, **kwargs):
+        assert stop_event is not None
+        while not stop_event.is_set():
+            await asyncio.sleep(0.01)
+        return False
+
+    monkeypatch.setattr(
+        "routers.agent_realtime.run_engineer_session",
+        fake_long_running_engineer_session,
+        raising=False,
+    )
+
+    with TestClient(app) as client:
+        ticket = client.post("/api/v1/agent/session-ticket", json={"project_id": 42, "model": "gpt-4.1"}).json()[
+            "ticket"
+        ]
+
+        with client.websocket_connect(f"/api/v1/agent/session/ws?ticket={ticket}") as websocket:
+            idle_state = websocket.receive_json()
+            assert idle_state == {
+                "type": "session.state",
+                "status": "idle",
+                "project_id": 42,
+                "assistant_role": "engineer",
+            }
+
+            websocket.send_json({"type": "user.message", "project_id": 42, "prompt": "build auth"})
+
+            running_state = websocket.receive_json()
+            assert running_state == {
+                "type": "session.state",
+                "status": "running",
+                "project_id": 42,
+                "assistant_role": "engineer",
+            }
+
+            websocket.send_json({"type": "run.stop"})
+            stopped = websocket.receive_json()
+            assert stopped == {"type": "run.stopped"}
+
+    asyncio.run(engine.dispose())

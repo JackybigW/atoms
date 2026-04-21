@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { client } from "@/lib/api";
 import { getAPIBaseURL } from "@/lib/config";
 import { buildAuthHeaders } from "@/lib/authToken";
-import { consumeSseBuffer } from "@/lib/sse";
+import { createAgentRealtimeSession, type AgentRealtimeEvent } from "@/lib/agentRealtime";
 import { useAuth } from "@/contexts/AuthContext";
 import { useWorkspace } from "@/contexts/WorkspaceContext";
 import { ThinkingDisclosure } from "@/components/chat/ThinkingDisclosure";
@@ -26,8 +26,6 @@ import {
   Briefcase,
   Sparkles,
   StopCircle,
-  FileCode,
-  CheckCircle2,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -79,15 +77,19 @@ function createTraceId(): string {
 
 export default function ChatPanel({ mode }: ChatPanelProps) {
   const { user, isAuthenticated } = useAuth();
-  const { projectId, addTerminalLog, reloadFiles, setPreview, clearPreview, reloadPreview } = useWorkspace();
+  const { projectId, addTerminalLog, applyRealtimeEvent, progressItems } = useWorkspace();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [selectedModel, setSelectedModel] = useState("MiniMax-M2.7-highspeed");
   const [isStreaming, setIsStreaming] = useState(false);
+  const [activeAssistantMessage, setActiveAssistantMessage] = useState("");
+  const [activeAssistantAgent, setActiveAssistantAgent] = useState("engineer");
+  const activeAssistantMessageRef = useRef("");
+  const activeAssistantAgentRef = useRef("engineer");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const sessionRef = useRef<ReturnType<typeof createAgentRealtimeSession> | null>(null);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -95,7 +97,7 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, scrollToBottom]);
+  }, [messages, activeAssistantMessage, progressItems, scrollToBottom]);
 
   // Load messages for project
   useEffect(() => {
@@ -155,99 +157,75 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
     addTerminalLog(`$ [agent:${traceId}] ${stage}`);
   }, [addTerminalLog]);
 
-  const handleAgentEvent = useCallback(
-    (payload: Record<string, unknown>) => {
-      const type = payload.type as string;
-      const traceId = String(payload.trace_id || "unknown");
-      logAgentTrace(traceId, `event:${type}`);
+  const handleRealtimeEvent = useCallback(
+    (event: AgentRealtimeEvent) => {
+      applyRealtimeEvent(event);
 
-      if (type === "session") {
-        addTerminalLog(`$ [agent:${traceId}] session started @ ${payload.workspace_root ?? ""}`);
+      if (event.type === "assistant.delta") {
+        const nextAgent = event.agent || "engineer";
+        const nextMessage = `${activeAssistantMessageRef.current}${event.content}`;
+        activeAssistantAgentRef.current = nextAgent;
+        activeAssistantMessageRef.current = nextMessage;
+        setActiveAssistantAgent(nextAgent);
+        setActiveAssistantMessage(nextMessage);
+        return;
+      }
+
+      if (event.type === "assistant.message_done") {
+        const content = activeAssistantMessageRef.current.trim();
+        if (content) {
+          const assistantMessage: Message = {
+            role: "assistant",
+            agent: activeAssistantAgentRef.current,
+            content,
+            model: selectedModel,
+            created_at: new Date().toISOString(),
+          };
+          appendMessage(assistantMessage);
+          void saveMessage(assistantMessage);
+        }
+        activeAssistantAgentRef.current = "engineer";
+        activeAssistantMessageRef.current = "";
+        setActiveAssistantAgent("engineer");
+        setActiveAssistantMessage("");
+        setIsLoading(false);
+        setIsStreaming(false);
+        return;
+      }
+
+      if (event.type === "run.stopped") {
+        setIsLoading(false);
+        setIsStreaming(false);
+        activeAssistantAgentRef.current = "engineer";
+        activeAssistantMessageRef.current = "";
+        setActiveAssistantAgent("engineer");
+        setActiveAssistantMessage("");
+        addTerminalLog("$ engineer run stopped");
+        return;
+      }
+
+      if (event.type === "session.state" && (event.status === "completed" || event.status === "failed")) {
+        setIsLoading(false);
+        setIsStreaming(false);
+        return;
+      }
+
+      if (event.type === "error") {
         appendMessage({
           role: "assistant",
-          agent: String(payload.agent || "swe"),
-          content: `Session started.\n\nWorkspace: \`${payload.workspace_root}\``,
+          agent: activeAssistantAgentRef.current,
+          content: event.error || event.message || "Unknown error",
           created_at: new Date().toISOString(),
         });
-        return;
-      }
-
-      if (type === "assistant") {
-        appendMessage({
-          role: "assistant",
-          agent: String(payload.agent || "swe"),
-          content: String(payload.content || ""),
-          thinking: payload.thinking ? String(payload.thinking) : undefined,
-          model: selectedModel,
-          created_at: new Date().toISOString(),
-        });
-        return;
-      }
-
-      if (type === "tool_call") {
-        const formattedArgs = (() => {
-          try {
-            return JSON.stringify(JSON.parse(String(payload.arguments || "{}")), null, 2);
-          } catch {
-            return String(payload.arguments || "{}");
-          }
-        })();
-        addTerminalLog(`$ [agent:${traceId}] tool call: ${String(payload.tool || "")}`);
-        appendMessage({
-          role: "system",
-          content: `Using \`${payload.tool}\`\n\n\`\`\`json\n${formattedArgs}\n\`\`\``,
-          created_at: new Date().toISOString(),
-        });
-        return;
-      }
-
-      if (type === "tool_result") {
-        addTerminalLog(`$ [agent:${traceId}] tool result: ${String(payload.tool || "")}`);
-        appendMessage({
-          role: "system",
-          content: `Result from \`${payload.tool}\`\n\n\`\`\`\n${String(payload.content || "")}\n\`\`\``,
-          created_at: new Date().toISOString(),
-        });
-        return;
-      }
-
-      if (type === "error") {
-        appendMessage({
-          role: "assistant",
-          agent: "swe",
-          content: `Error: ${String(payload.error || "Unknown error")}`,
-          created_at: new Date().toISOString(),
-        });
-        return;
-      }
-
-      if (type === "workspace_sync") {
-        const count = Array.isArray(payload.changed_files) ? payload.changed_files.length : 0;
-        addTerminalLog(`$ [agent:${traceId}] synced ${count} file(s) from sandbox`);
-        void reloadFiles();
-        return;
-      }
-
-      if (type === "preview_ready") {
-        const preview_session_key = String(payload.preview_session_key || "");
-        const preview_frontend_url = String(payload.preview_frontend_url || "");
-        const preview_backend_url = String(payload.preview_backend_url || "");
-        const frontend_status = payload.frontend_status ? String(payload.frontend_status) : undefined;
-        const backend_status = payload.backend_status ? String(payload.backend_status) : undefined;
-        setPreview({ preview_session_key, preview_frontend_url, preview_backend_url, frontend_status, backend_status });
-        reloadPreview();
-        addTerminalLog(`$ [agent:${traceId}] preview ready: ${preview_frontend_url}`);
-        return;
-      }
-
-      if (type === "preview_failed") {
-        clearPreview();
-        reloadPreview();
-        addTerminalLog(`$ [agent:${traceId}] preview failed: ${String(payload.reason || "unknown")}`);
-        return;
+        activeAssistantAgentRef.current = "engineer";
+        activeAssistantMessageRef.current = "";
+        setActiveAssistantAgent("engineer");
+        setActiveAssistantMessage("");
+        setIsLoading(false);
+        setIsStreaming(false);
       }
     },
-    [addTerminalLog, appendMessage, logAgentTrace, selectedModel, reloadFiles, setPreview, clearPreview, reloadPreview]
+    [addTerminalLog, appendMessage, applyRealtimeEvent, selectedModel]
   );
 
   const handleSend = async () => {
@@ -268,28 +246,28 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
     const traceId = createTraceId();
 
     try {
-      const controller = new AbortController();
-      abortControllerRef.current = controller;
+      sessionRef.current?.close();
+      sessionRef.current = null;
+      activeAssistantAgentRef.current = "engineer";
+      activeAssistantMessageRef.current = "";
+      setActiveAssistantAgent("engineer");
+      setActiveAssistantMessage("");
       logAgentTrace(traceId, "send:start", {
         projectId,
         model: selectedModel,
         promptChars: input.trim().length,
       });
 
-      const response = await fetch(`${getAPIBaseURL()}/api/v1/agent/run`, {
+      const response = await fetch(`${getAPIBaseURL()}/api/v1/agent/session-ticket`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...buildAuthHeaders(),
-          "X-Trace-Id": traceId,
         },
         body: JSON.stringify({
-          prompt: input.trim(),
-          agent: "swe",
           model: selectedModel,
           project_id: projectId,
         }),
-        signal: controller.signal,
       });
 
       logAgentTrace(traceId, "send:response", {
@@ -297,61 +275,20 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
         status: response.status,
       });
 
-      if (!response.ok || !response.body) {
+      if (!response.ok) {
         throw new Error(`Agent request failed with status ${response.status}`);
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let buffer = "";
-      let transcript = "";
-      let chunkCount = 0;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        chunkCount += 1;
-        if (chunkCount === 1) {
-          logAgentTrace(traceId, "stream:first-chunk");
-        }
-        buffer += decoder.decode(value, { stream: true });
-        const parsed = consumeSseBuffer(buffer);
-        buffer = parsed.rest;
-
-        for (const parsedEvent of parsed.events) {
-          const payload = parsedEvent.payload;
-          handleAgentEvent(payload);
-
-          if (payload.type === "assistant" && payload.content) {
-            transcript += `${String(payload.content)}\n\n`;
-          }
-          if (payload.type === "done") {
-            if (transcript.trim()) {
-              saveMessage({
-                role: "assistant",
-                content: transcript.trim(),
-                agent: "swe",
-              model: selectedModel,
-            });
-          }
-            if (parsedEvent.event === "done") {
-              logAgentTrace(traceId, "stream:done");
-              setIsLoading(false);
-              setIsStreaming(false);
-            }
-          }
-          if (payload.type === "error") {
-            logAgentTrace(traceId, "stream:error", { error: payload.error });
-            setIsLoading(false);
-            setIsStreaming(false);
-          }
-        }
-      }
-
-      logAgentTrace(traceId, "stream:complete", { chunks: chunkCount });
-      setIsLoading(false);
-      setIsStreaming(false);
+      const { ticket } = (await response.json()) as { ticket: string };
+      const apiBaseUrl = new URL(getAPIBaseURL());
+      const wsProtocol = apiBaseUrl.protocol === "https:" ? "wss:" : "ws:";
+      const session = createAgentRealtimeSession({
+        url: `${wsProtocol}//${apiBaseUrl.host}/api/v1/agent/session/ws?ticket=${ticket}`,
+        onEvent: handleRealtimeEvent,
+      });
+      sessionRef.current = session;
+      session.sendUserMessage({ projectId: Number(projectId), prompt: userMsg.content });
+      logAgentTrace(traceId, "session:sent");
     } catch (err) {
       logAgentTrace(traceId, "send:exception", {
         message: err instanceof Error ? err.message : "unknown",
@@ -368,18 +305,22 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
       });
       setIsLoading(false);
       setIsStreaming(false);
-    } finally {
-      abortControllerRef.current = null;
     }
   };
 
   const handleStop = () => {
-    abortControllerRef.current?.abort();
-    abortControllerRef.current = null;
+    sessionRef.current?.stopRun();
     setIsLoading(false);
     setIsStreaming(false);
-    addTerminalLog("$ agent aborted by user");
+    addTerminalLog("$ engineer stop requested");
   };
+
+  useEffect(() => {
+    return () => {
+      sessionRef.current?.close();
+      sessionRef.current = null;
+    };
+  }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -531,10 +472,42 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
             </div>
           </div>
         ))}
+        {(activeAssistantMessage || progressItems.length > 0) && (
+          <div className="flex gap-3">
+            <div className="flex-shrink-0">
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#7C3AED] to-[#A855F7] flex items-center justify-center">
+                <Bot className="w-4 h-4 text-white" />
+              </div>
+            </div>
+            <div className="max-w-[85%] bg-[#18181B] border border-[#27272A] rounded-2xl rounded-tl-md px-4 py-2.5">
+              <div className={`text-[10px] font-semibold uppercase tracking-wider mb-1 ${AGENT_COLORS[activeAssistantAgent] || "text-[#A855F7]"}`}>
+                {activeAssistantAgent}
+              </div>
+              {activeAssistantMessage ? (
+                <div className="text-sm text-[#E4E4E7] prose prose-invert prose-sm max-w-none">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {activeAssistantMessage}
+                  </ReactMarkdown>
+                  {isStreaming && (
+                    <span className="inline-block w-2 h-4 bg-[#A855F7] animate-pulse ml-0.5" />
+                  )}
+                </div>
+              ) : null}
+              {progressItems.length > 0 ? (
+                <div className="mt-3 space-y-1">
+                  {progressItems.map((item) => (
+                    <div key={item} className="text-xs text-[#A1A1AA]">
+                      {item}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        )}
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Area */}
       <div className="border-t border-[#27272A] p-3">
         <div className="flex items-end gap-2 bg-[#18181B] border border-[#27272A] rounded-xl px-3 py-2 focus-within:border-[#7C3AED]/50 transition-colors">
           <button className="text-[#71717A] hover:text-[#A1A1AA] p-1 mb-0.5">

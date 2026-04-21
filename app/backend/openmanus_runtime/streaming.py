@@ -9,6 +9,7 @@ from openmanus_runtime.llm import LLM
 from openmanus_runtime.schema import Message
 from openmanus_runtime.tool.file_operators import FileOperator
 from openmanus_runtime.tool.str_replace_editor import StrReplaceEditor
+from services.workspace_event_emitter import WorkspaceEventEmitter
 
 
 EventEmitter = Callable[[dict[str, Any]], Awaitable[None]]
@@ -26,6 +27,7 @@ class StreamingSWEAgent(SWEAgent):
         prev_len = len(self.memory.messages)
         should_act = await self.think()
         new_messages = self.memory.messages[prev_len:]
+        workspace_events = WorkspaceEventEmitter(self.event_emitter) if self.event_emitter is not None else None
 
         for message in new_messages:
             if message.role != "assistant":
@@ -41,12 +43,9 @@ class StreamingSWEAgent(SWEAgent):
 
             if message.tool_calls:
                 for tool_call in message.tool_calls:
-                    await self._emit(
-                        "tool_call",
-                        tool=tool_call.function.name,
-                        arguments=tool_call.function.arguments,
-                        tool_call_id=tool_call.id,
-                    )
+                    if workspace_events is not None:
+                        await workspace_events.progress(f"Running {tool_call.function.name}")
+                        await workspace_events.terminal_log(f"$ tool {tool_call.function.name}")
 
         if not should_act:
             return "Thinking complete - no action needed"
@@ -58,6 +57,7 @@ class StreamingSWEAgent(SWEAgent):
             return self.messages[-1].content or "No content or commands to execute"
 
         results = []
+        workspace_events = WorkspaceEventEmitter(self.event_emitter) if self.event_emitter is not None else None
         for command in self.tool_calls:
             self._current_base64_image = None
             result = await self.execute_tool(command)
@@ -68,12 +68,8 @@ class StreamingSWEAgent(SWEAgent):
                 base64_image=self._current_base64_image,
             )
             self.memory.add_message(tool_msg)
-            await self._emit(
-                "tool_result",
-                tool=command.function.name,
-                tool_call_id=command.id,
-                content=result,
-            )
+            if workspace_events is not None:
+                await workspace_events.terminal_log(result)
             results.append(result)
 
         return "\n\n".join(results)

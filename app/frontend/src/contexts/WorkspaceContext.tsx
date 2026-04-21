@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from "react";
 import { client } from "@/lib/api";
 import { toast } from "sonner";
+import type { AgentRealtimeEvent } from "@/lib/agentRealtime";
 import { WorkspacePreviewBundle } from "@/lib/workspaceRuntime";
 
 export interface ProjectFile {
@@ -31,6 +32,10 @@ interface WorkspaceContextType {
   reloadPreview: () => void;
   terminalLogs: string[];
   addTerminalLog: (log: string) => void;
+  sessionStatus: string;
+  progressItems: string[];
+  applyFileSnapshot: (snapshot: { path: string; content: string }) => void;
+  applyRealtimeEvent: (event: AgentRealtimeEvent) => void;
   fileVersion: number;
   reloadFiles: () => Promise<void>;
 }
@@ -52,6 +57,10 @@ const WorkspaceContext = createContext<WorkspaceContextType>({
   reloadPreview: () => {},
   terminalLogs: [],
   addTerminalLog: () => {},
+  sessionStatus: "idle",
+  progressItems: [],
+  applyFileSnapshot: () => {},
+  applyRealtimeEvent: () => {},
   fileVersion: 0,
   reloadFiles: async () => {},
 });
@@ -149,6 +158,8 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     "",
     "✓ Development server running",
   ]);
+  const [sessionStatus, setSessionStatus] = useState("idle");
+  const [progressItems, setProgressItems] = useState<string[]>([]);
   const [fileVersion, setFileVersion] = useState(0);
   const projectIdRef = useRef<number | null>(null);
   const reloadingRef = useRef(false);
@@ -159,6 +170,8 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   // Reset preview whenever the active project changes
   useEffect(() => {
     setPreviewState({});
+    setSessionStatus("idle");
+    setProgressItems([]);
   }, [projectId]);
 
   const setPreview = useCallback((p: Partial<WorkspacePreviewBundle>) => {
@@ -181,6 +194,31 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
 
   const addTerminalLog = useCallback((log: string) => {
     setTerminalLogs((prev) => [...prev, log]);
+  }, []);
+
+  const applyFileSnapshot = useCallback(({ path, content }: { path: string; content: string }) => {
+    setFiles((prev) => {
+      const existing = prev.find((file) => file.file_path === path);
+      if (existing) {
+        return prev.map((file) =>
+          file.file_path === path
+            ? {
+                ...file,
+                content,
+              }
+            : file
+        );
+      }
+
+      return prev.concat({
+        file_path: path,
+        file_name: getFileName(path),
+        content,
+        language: getLanguageFromPath(path),
+        is_directory: false,
+      });
+    });
+    setFileVersion((value) => value + 1);
   }, []);
 
   const reloadFiles = useCallback(async () => {
@@ -210,6 +248,59 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       reloadingRef.current = false;
     }
   }, [setFiles]);
+
+  const applyRealtimeEvent = useCallback((event: AgentRealtimeEvent) => {
+    if (event.type === "session.state") {
+      setSessionStatus(event.status);
+      if (event.status === "running") {
+        setProgressItems([]);
+      }
+      return;
+    }
+
+    if (event.type === "progress") {
+      setProgressItems((items) => items.concat(event.label));
+      return;
+    }
+
+    if (event.type === "terminal.log") {
+      addTerminalLog(event.content);
+      return;
+    }
+
+    if (event.type === "file.snapshot") {
+      applyFileSnapshot({ path: event.path, content: event.content });
+      return;
+    }
+
+    if (event.type === "file.changed") {
+      void reloadFiles();
+      return;
+    }
+
+    if (event.type === "preview_ready") {
+      setPreviewState((prev) => ({
+        ...prev,
+        preview_session_key: event.preview_session_key,
+        preview_frontend_url: event.preview_frontend_url,
+        preview_backend_url: event.preview_backend_url,
+        frontend_status: event.frontend_status,
+        backend_status: event.backend_status,
+      }));
+      setPreviewKey((currentKey) => currentKey + 1);
+      return;
+    }
+
+    if (event.type === "preview_failed") {
+      setPreviewState({});
+      setPreviewKey((currentKey) => currentKey + 1);
+      return;
+    }
+
+    if (event.type === "run.stopped") {
+      setSessionStatus("stopped");
+    }
+  }, [addTerminalLog, applyFileSnapshot, reloadFiles]);
 
   const writeFile = useCallback(
     async (filePath: string, content: string) => {
@@ -316,6 +407,10 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
         reloadPreview,
         terminalLogs,
         addTerminalLog,
+        sessionStatus,
+        progressItems,
+        applyFileSnapshot,
+        applyRealtimeEvent,
         fileVersion,
         reloadFiles,
       }}

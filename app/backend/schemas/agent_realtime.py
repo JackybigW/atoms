@@ -22,7 +22,7 @@ class AgentSessionTicketResponse(BaseModel):
 
 class AgentSessionStatePayload(BaseModel):
     type: Literal["session.state"] = "session.state"
-    status: Literal["idle"] = "idle"
+    status: Literal["idle", "running", "completed", "failed"] = "idle"
     project_id: int
     assistant_role: Literal["engineer"] = "engineer"
 
