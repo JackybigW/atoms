@@ -1,6 +1,7 @@
 import asyncio
 import os
 import shlex
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -122,6 +123,21 @@ _WRITE_REDIRECTION_TOKENS = {">", ">>", ">|", "1>", "1>>", "2>", "2>>", "&>", "&
 _WRITE_COMMANDS_WITH_DESTINATION = {"cp", "mv", "ln", "install"}
 _WRITE_COMMANDS_WITH_TARGETS = {"touch", "mkdir", "rm", "rmdir", "tee"}
 _IN_PLACE_EDIT_COMMANDS = {"sed", "perl"}
+_WORKSPACE_PATH_LITERAL_RE = re.compile(r"(/workspace(?:/[^\s'\"`;&|<>]+)+)")
+_WRITE_INTENT_RE = re.compile(
+    r"(?:"
+    r"\b(?:cp|mv|ln|install|touch|mkdir|rm|rmdir|tee)\b"
+    r"|"
+    r"\b(?:sed|perl)\b[^\n;|&]*?\s-i(?:\b|$)"
+    r"|"
+    r"\bopen\s*\([^)]*['\"](?:w|a|x)(?:\+|b)?['\"]"
+    r"|"
+    r"\.write(?:_text|_bytes)?\s*\("
+    r"|"
+    r"(?:^|[^\S\r\n])(?:>>?|>\||&>>?|&>)\s*"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _is_option(token: str) -> bool:
@@ -172,9 +188,12 @@ def _extract_targets(command: str) -> list[Path]:
 
 
 def _validate_bash_write_targets(command: str) -> None:
-    for target in _extract_targets(command):
-        if str(target).startswith("/workspace"):
-            validate_workspace_write_path(target)
+    if not _WRITE_INTENT_RE.search(command):
+        return
+
+    workspace_targets = [Path(match.group(1)) for match in _WORKSPACE_PATH_LITERAL_RE.finditer(command)]
+    for target in workspace_targets:
+        validate_workspace_write_path(target)
 
 
 class Bash(BaseTool):
