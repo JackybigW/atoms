@@ -33,3 +33,25 @@ After the SWE agent finishes editing the project, the backend calls
 `docker exec <container> /usr/local/bin/start-preview`, which reads `.atoms/preview.json`,
 starts the frontend on `3000`, optionally starts the backend on `8000`, and keeps both
 reachable through same-origin preview proxy routes.
+
+## Preview Manifest
+
+Generated apps should write `/workspace/.atoms/preview.json`:
+
+```json
+{
+  "frontend": {
+    "command": "pnpm run dev -- --host 0.0.0.0 --port 3000",
+    "healthcheck_path": "/"
+  },
+  "backend": {
+    "command": "uv run uvicorn app.main:app --host 0.0.0.0 --port 8000",
+    "healthcheck_path": "/health"
+  }
+}
+```
+
+Preview routes:
+
+- `/preview/<preview_session_key>/frontend/`
+- `/preview/<preview_session_key>/backend/`
