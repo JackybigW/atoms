@@ -1,9 +1,12 @@
 import asyncio
 import os
+import shlex
+from pathlib import Path
 from typing import Optional
 
 from openmanus_runtime.exceptions import ToolError
 from openmanus_runtime.tool.base import BaseTool, CLIResult
+from openmanus_runtime.tool.file_operators import validate_workspace_write_path
 
 
 _BASH_DESCRIPTION = """Execute a bash command in the terminal.
@@ -66,6 +69,8 @@ class _BashSession:
                 f"timed out: bash has not returned in {self._timeout} seconds and must be restarted",
             )
 
+        _validate_bash_write_targets(command)
+
         # we know these are not None because we created the process with PIPEs
         assert self._process.stdin
         assert self._process.stdout
@@ -111,6 +116,65 @@ class _BashSession:
         self._process.stderr._buffer.clear()  # pyright: ignore[reportAttributeAccessIssue]
 
         return CLIResult(output=output, error=error)
+
+
+_WRITE_REDIRECTION_TOKENS = {">", ">>", ">|", "1>", "1>>", "2>", "2>>", "&>", "&>>"}
+_WRITE_COMMANDS_WITH_DESTINATION = {"cp", "mv", "ln", "install"}
+_WRITE_COMMANDS_WITH_TARGETS = {"touch", "mkdir", "rm", "rmdir", "tee"}
+_IN_PLACE_EDIT_COMMANDS = {"sed", "perl"}
+
+
+def _is_option(token: str) -> bool:
+    return token.startswith("-")
+
+
+def _extract_targets(command: str) -> list[Path]:
+    tokens = shlex.split(command)
+    if not tokens:
+        return []
+
+    targets: list[Path] = []
+    command_name = tokens[0]
+    idx = 1
+    while idx < len(tokens):
+        token = tokens[idx]
+        matched_redirection = next(
+            (redir for redir in sorted(_WRITE_REDIRECTION_TOKENS, key=len, reverse=True) if token == redir or token.startswith(redir)),
+            None,
+        )
+        if matched_redirection is not None:
+            remainder = token[len(matched_redirection) :]
+            if remainder:
+                targets.append(Path(remainder))
+            elif idx + 1 < len(tokens):
+                targets.append(Path(tokens[idx + 1]))
+            idx += 2
+            continue
+        if token in _WRITE_REDIRECTION_TOKENS:
+            if idx + 1 < len(tokens):
+                targets.append(Path(tokens[idx + 1]))
+            idx += 2
+            continue
+        idx += 1
+
+    positional_tokens = [token for token in tokens[1:] if not _is_option(token)]
+
+    if command_name in _WRITE_COMMANDS_WITH_DESTINATION and positional_tokens:
+        targets.append(Path(positional_tokens[-1]))
+    elif command_name in _WRITE_COMMANDS_WITH_TARGETS:
+        targets.extend(Path(token) for token in positional_tokens)
+    elif command_name in _IN_PLACE_EDIT_COMMANDS and any(
+        token == "-i" or token.startswith("-i") for token in tokens[1:]
+    ) and positional_tokens:
+        targets.append(Path(positional_tokens[-1]))
+
+    return targets
+
+
+def _validate_bash_write_targets(command: str) -> None:
+    for target in _extract_targets(command):
+        if str(target).startswith("/workspace"):
+            validate_workspace_write_path(target)
 
 
 class Bash(BaseTool):
@@ -160,6 +224,7 @@ class ContainerBashSession:
         self.container_name = container_name
 
     async def run(self, command: str) -> CLIResult:
+        _validate_bash_write_targets(command)
         returncode, stdout, stderr = await self.runtime_service.exec(
             self.container_name,
             f"cd /workspace && {command}",

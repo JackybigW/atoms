@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from openmanus_runtime.exceptions import ToolError
+from openmanus_runtime.tool.bash import ContainerBashSession
 from openmanus_runtime.tool.file_operators import ProjectFileOperator
 from openmanus_runtime.tool.str_replace_editor import StrReplaceEditor
 from routers.agent_runtime import router
@@ -93,6 +94,42 @@ async def test_str_replace_editor_rejects_protected_backend_paths(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_str_replace_editor_rejects_str_replace_on_protected_backend_paths(tmp_path):
+    operator = ProjectFileOperator(
+        host_root=tmp_path / "user-1" / "1",
+        container_root=Path("/workspace"),
+    )
+    operator.host_root.mkdir(parents=True, exist_ok=True)
+    editor = StrReplaceEditor.with_operator(operator)
+
+    with pytest.raises(ToolError):
+        await editor.execute(
+            command="str_replace",
+            path="/workspace/app/backend/models/schema.py",
+            old_str="old",
+            new_str="new",
+        )
+
+
+@pytest.mark.asyncio
+async def test_str_replace_editor_rejects_insert_on_non_allowlisted_path(tmp_path):
+    operator = ProjectFileOperator(
+        host_root=tmp_path / "user-1" / "1",
+        container_root=Path("/workspace"),
+    )
+    operator.host_root.mkdir(parents=True, exist_ok=True)
+    editor = StrReplaceEditor.with_operator(operator)
+
+    with pytest.raises(ToolError):
+        await editor.execute(
+            command="insert",
+            path="/workspace/tmp/x.txt",
+            insert_line=0,
+            new_str="bad",
+        )
+
+
+@pytest.mark.asyncio
 async def test_str_replace_editor_rejects_traversal_into_protected_path(tmp_path):
     operator = ProjectFileOperator(
         host_root=tmp_path / "user-1" / "1",
@@ -127,6 +164,46 @@ async def test_str_replace_editor_allows_view_on_protected_backend_paths(tmp_pat
     )
 
     assert "safe read" in result
+
+
+@pytest.mark.asyncio
+async def test_container_bash_session_blocks_workspace_write_targets():
+    class FakeRuntimeService:
+        def __init__(self):
+            self.calls: list[tuple[str, str]] = []
+
+        async def exec(self, container_name, command):
+            self.calls.append((container_name, command))
+            return 0, "ok", ""
+
+    runtime_service = FakeRuntimeService()
+    session = ContainerBashSession(runtime_service, "container-1")
+
+    with pytest.raises(ToolError):
+        await session.run("echo hi >/workspace/tmp/x.txt")
+
+    assert runtime_service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_container_bash_session_allows_read_only_workspace_commands():
+    class FakeRuntimeService:
+        def __init__(self):
+            self.calls: list[tuple[str, str]] = []
+
+        async def exec(self, container_name, command):
+            self.calls.append((container_name, command))
+            return 0, "ok", ""
+
+    runtime_service = FakeRuntimeService()
+    session = ContainerBashSession(runtime_service, "container-1")
+
+    result = await session.run("cat /workspace/app/backend/core/config.py")
+
+    assert runtime_service.calls == [
+        ("container-1", "cd /workspace && cat /workspace/app/backend/core/config.py")
+    ]
+    assert result.output == "ok"
 
 
 @pytest.mark.asyncio
