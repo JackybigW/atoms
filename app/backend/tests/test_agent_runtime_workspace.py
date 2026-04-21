@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from openmanus_runtime.exceptions import ToolError
 from openmanus_runtime.tool.file_operators import ProjectFileOperator
+from openmanus_runtime.tool.str_replace_editor import StrReplaceEditor
 from routers.agent_runtime import router
 
 
@@ -56,6 +57,40 @@ async def test_project_file_operator_allows_docs_and_frontend_paths(tmp_path):
         "/workspace/app/frontend/src/App.tsx",
         "export default function App() { return null }",
     )
+
+
+@pytest.mark.asyncio
+async def test_str_replace_editor_rejects_protected_backend_paths(tmp_path):
+    operator = ProjectFileOperator(
+        host_root=tmp_path / "user-1" / "1",
+        container_root=Path("/workspace"),
+    )
+    operator.host_root.mkdir(parents=True, exist_ok=True)
+    editor = StrReplaceEditor.with_operator(operator)
+
+    with pytest.raises(ToolError):
+        await editor.execute(
+            command="create",
+            path="/workspace/app/backend/core/config.py",
+            file_text="bad",
+        )
+
+
+@pytest.mark.asyncio
+async def test_str_replace_editor_rejects_traversal_into_protected_path(tmp_path):
+    operator = ProjectFileOperator(
+        host_root=tmp_path / "user-1" / "1",
+        container_root=Path("/workspace"),
+    )
+    operator.host_root.mkdir(parents=True, exist_ok=True)
+    editor = StrReplaceEditor.with_operator(operator)
+
+    with pytest.raises(ToolError):
+        await editor.execute(
+            command="create",
+            path="/workspace/app/frontend/../backend/core/config.py",
+            file_text="bad",
+        )
 
 
 @pytest.mark.asyncio

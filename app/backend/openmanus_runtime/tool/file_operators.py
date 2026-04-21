@@ -31,24 +31,42 @@ def _as_posix_path(path: PathLike) -> PurePosixPath:
     return PurePosixPath(str(path))
 
 
+def _normalize_posix_path(path: PathLike) -> PurePosixPath:
+    candidate = _as_posix_path(path)
+    if not candidate.is_absolute():
+        return candidate
+
+    normalized_parts: list[str] = []
+    for part in candidate.parts:
+        if part in {"/", "."}:
+            continue
+        if part == "..":
+            if normalized_parts:
+                normalized_parts.pop()
+            continue
+        normalized_parts.append(part)
+
+    return PurePosixPath("/", *normalized_parts)
+
+
 def _is_under(path: PurePosixPath, root: PurePosixPath) -> bool:
     return path == root or root in path.parents
 
 
 def _is_protected_workspace_path(path: PathLike) -> bool:
-    candidate = _as_posix_path(path)
+    candidate = _normalize_posix_path(path)
     return any(_is_under(candidate, protected) for protected in PROTECTED_PATHS)
 
 
 def _is_allowed_workspace_write_path(path: PathLike) -> bool:
-    candidate = _as_posix_path(path)
+    candidate = _normalize_posix_path(path)
     return any(
         _is_under(candidate, allowed_root) for allowed_root in ALLOWED_WORKSPACE_WRITE_ROOTS
     )
 
 
 def validate_workspace_path(path: PathLike) -> None:
-    candidate = _as_posix_path(path)
+    candidate = _normalize_posix_path(path)
     if not candidate.is_absolute():
         raise ToolError(f"The path {path} is not an absolute path")
     if not _is_under(candidate, WORKSPACE_ROOT):
