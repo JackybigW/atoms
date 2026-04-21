@@ -110,23 +110,26 @@ async def proxy_preview_websocket(
     )
     upstream_url = build_preview_websocket_upstream(session, service, path)
     await websocket.accept()
-    async with websockets.connect(upstream_url) as upstream:
-        async def client_to_upstream():
-            while True:
-                message = await websocket.receive()
-                if "text" in message:
-                    await upstream.send(message["text"])
-                elif "bytes" in message:
-                    await upstream.send(message["bytes"])
+    try:
+        async with websockets.connect(upstream_url) as upstream:
+            async def client_to_upstream():
+                while True:
+                    message = await websocket.receive()
+                    if "text" in message:
+                        await upstream.send(message["text"])
+                    elif "bytes" in message:
+                        await upstream.send(message["bytes"])
 
-        async def upstream_to_client():
-            async for message in upstream:
-                if isinstance(message, bytes):
-                    await websocket.send_bytes(message)
-                else:
-                    await websocket.send_text(message)
+            async def upstream_to_client():
+                async for message in upstream:
+                    if isinstance(message, bytes):
+                        await websocket.send_bytes(message)
+                    else:
+                        await websocket.send_text(message)
 
-        try:
-            await asyncio.gather(client_to_upstream(), upstream_to_client())
-        except (WebSocketDisconnect, websockets.exceptions.ConnectionClosed):
-            await websocket.close()
+            try:
+                await asyncio.gather(client_to_upstream(), upstream_to_client())
+            except (WebSocketDisconnect, websockets.exceptions.ConnectionClosed):
+                pass
+    except (OSError, websockets.exceptions.WebSocketException):
+        await websocket.close(code=1011, reason="Preview upstream unavailable")
