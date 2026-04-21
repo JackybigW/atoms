@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from routers.preview_gateway import router
+from routers.preview_gateway import router, build_preview_websocket_upstream
 
 
 class _FakeSession:
@@ -71,3 +71,9 @@ def test_unknown_preview_session_key_returns_404(monkeypatch):
     client = _make_client(monkeypatch)
     response = client.get("/preview/unknown-key/frontend/")
     assert response.status_code == 404
+
+
+def test_build_preview_websocket_upstream_uses_service_port():
+    session = _FakeSession()
+    assert build_preview_websocket_upstream(session, "frontend", "hmr") == "ws://127.0.0.1:3100/hmr"
+    assert build_preview_websocket_upstream(session, "backend", "ws/events") == "ws://127.0.0.1:8100/ws/events"

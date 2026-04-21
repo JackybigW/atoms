@@ -1,7 +1,9 @@
+import asyncio
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+import websockets
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
@@ -88,3 +90,43 @@ async def proxy_preview_backend(
     upstream = f"http://127.0.0.1:{session.backend_port}/{path}"
     status_code, headers, content = await _proxy_http_request(upstream, request)
     return Response(content=content, status_code=status_code, headers=headers)
+
+
+def build_preview_websocket_upstream(session, service: str, path: str) -> str:
+    port = session.frontend_port if service == "frontend" else session.backend_port
+    return f"ws://127.0.0.1:{port}/{path}"
+
+
+@router.websocket("/preview/{preview_session_key}/{service}/ws/{path:path}")
+async def proxy_preview_websocket(
+    websocket: WebSocket,
+    preview_session_key: str,
+    service: str,
+    path: str,
+    db: AsyncSession = Depends(get_db),
+):
+    session = _validate_preview_session(
+        await WorkspaceRuntimeSessionsService(db).get_by_preview_session_key(preview_session_key)
+    )
+    upstream_url = build_preview_websocket_upstream(session, service, path)
+    await websocket.accept()
+    async with websockets.connect(upstream_url) as upstream:
+        async def client_to_upstream():
+            while True:
+                message = await websocket.receive()
+                if "text" in message:
+                    await upstream.send(message["text"])
+                elif "bytes" in message:
+                    await upstream.send(message["bytes"])
+
+        async def upstream_to_client():
+            async for message in upstream:
+                if isinstance(message, bytes):
+                    await websocket.send_bytes(message)
+                else:
+                    await websocket.send_text(message)
+
+        try:
+            await asyncio.gather(client_to_upstream(), upstream_to_client())
+        except (WebSocketDisconnect, websockets.exceptions.ConnectionClosed):
+            await websocket.close()

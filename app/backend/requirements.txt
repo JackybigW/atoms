@@ -36,3 +36,6 @@ tenacity>=9.0.0
 
 # payment module dependencies
 stripe>=12.0.0
+
+# preview gateway websocket proxy
+websockets>=12.0
