@@ -94,3 +94,41 @@ async def test_agent_task_store_list_tasks_handles_malformed_blocked_by_json(db_
     listed = await store.list_tasks(project_id=42, request_key="req-4")
 
     assert listed[0].blocked_by == []
+
+
+@pytest.mark.asyncio
+async def test_agent_task_store_list_tasks_rejects_json_string_blocked_by(db_session):
+    db_session.add(
+        AgentTasks(
+            project_id=42,
+            request_key="req-5",
+            subject="Create homepage",
+            description="Implement landing page shell",
+            blocked_by='"foo"',
+        )
+    )
+    await db_session.commit()
+
+    store = AgentTaskStore(db_session)
+    listed = await store.list_tasks(project_id=42, request_key="req-5")
+
+    assert listed[0].blocked_by == []
+
+
+@pytest.mark.asyncio
+async def test_agent_task_store_list_tasks_rejects_non_string_entries_in_blocked_by_json(db_session):
+    db_session.add(
+        AgentTasks(
+            project_id=42,
+            request_key="req-6",
+            subject="Create homepage",
+            description="Implement landing page shell",
+            blocked_by='{"deps": ["a"]}',
+        )
+    )
+    await db_session.commit()
+
+    store = AgentTaskStore(db_session)
+    listed = await store.list_tasks(project_id=42, request_key="req-6")
+
+    assert listed[0].blocked_by == []

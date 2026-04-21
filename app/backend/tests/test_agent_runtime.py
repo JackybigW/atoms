@@ -78,6 +78,24 @@ def test_classify_user_request_treats_question_form_update_api_client_as_convers
     assert result.requires_backend_readme is True
 
 
+def test_classify_user_request_treats_can_you_add_auth_as_implementation():
+    result = classify_user_request("can you add auth?")
+    assert result.mode == "implementation"
+    assert result.requires_backend_readme is True
+
+
+def test_classify_user_request_treats_could_you_build_login_page_as_implementation():
+    result = classify_user_request("could you build a login page?")
+    assert result.mode == "implementation"
+    assert result.requires_backend_readme is False
+
+
+def test_classify_user_request_treats_please_add_auth_question_as_implementation():
+    result = classify_user_request("please add auth?")
+    assert result.mode == "implementation"
+    assert result.requires_backend_readme is True
+
+
 def test_build_bootstrap_context_defaults_to_classification():
     result = build_bootstrap_context("帮我新增一个 billing 页面和后端接口")
     assert result.mode == "implementation"

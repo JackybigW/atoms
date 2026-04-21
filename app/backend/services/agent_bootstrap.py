@@ -28,7 +28,11 @@ BACKEND_KEYWORDS = (
 
 _IMPLEMENTATION_PATTERN = re.compile(r"\b(?:build|implement|create|add|update|modify|fix)\b", re.IGNORECASE)
 _BACKEND_PATTERN = re.compile(r"\b(?:api|backend|database|auth|storage|payment)\b", re.IGNORECASE)
-_QUESTION_PREFIX_PATTERN = re.compile(r"^(?:how|what|why|when|where|who|which|is|are|do|does|did|can|could|would|should|will|may|might)\b", re.IGNORECASE)
+_ADVISORY_QUESTION_PATTERN = re.compile(
+    r"^(?:how\s+do\s+i|how\s+should\s+i|how\s+can\s+i|what\s+is\s+the\s+best\s+way\s+to|what\s+should\s+i|why\s+should\s+i)\b",
+    re.IGNORECASE,
+)
+_POLITE_EXECUTION_PATTERN = re.compile(r"^(?:can\s+you|could\s+you|please)\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -44,9 +48,10 @@ def _contains_keyword(prompt: str, keywords: tuple[str, ...]) -> bool:
 
 def classify_user_request(prompt: str) -> BootstrapContext:
     lowered = prompt.lower()
-    question_form = bool(_QUESTION_PREFIX_PATTERN.search(lowered)) or "?" in prompt
+    advisory_question = bool(_ADVISORY_QUESTION_PATTERN.search(lowered))
+    polite_execution = bool(_POLITE_EXECUTION_PATTERN.search(lowered))
     implementation = bool(_IMPLEMENTATION_PATTERN.search(lowered)) or _contains_keyword(prompt, IMPLEMENTATION_KEYWORDS[6:])
-    if question_form:
+    if advisory_question and not polite_execution:
         implementation = False
     backend = bool(_BACKEND_PATTERN.search(lowered)) or _contains_keyword(prompt, BACKEND_KEYWORDS)
     return BootstrapContext(

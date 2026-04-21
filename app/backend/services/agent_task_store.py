@@ -74,14 +74,14 @@ class AgentTaskStore:
         if blocked_by is None:
             return []
         if isinstance(blocked_by, list):
-            return blocked_by
+            return blocked_by if all(isinstance(item, str) for item in blocked_by) else []
         if not blocked_by:
             return []
         try:
             parsed = json.loads(blocked_by)
         except json.JSONDecodeError:
             return []
-        return parsed if isinstance(parsed, list) else []
+        return parsed if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed) else []
 
     @classmethod
     def _to_record(cls, task: AgentTasks) -> AgentTaskRecord:
