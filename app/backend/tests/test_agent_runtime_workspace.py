@@ -225,6 +225,11 @@ async def test_container_bash_session_blocks_interpreter_write_targets():
             'python -c "open(\'/workspace/app/backend/core/pwn.py\',\'w\').write(\'x\')"'
         )
 
+    with pytest.raises(ToolError):
+        await session.run(
+            'python -c "p=\'/workspace/app/backend\'; open(p + \'/core/pwn.py\',\'w\').write(\'x\')"'
+        )
+
     assert runtime_service.calls == []
 
 
@@ -247,6 +252,30 @@ async def test_container_bash_session_allows_read_only_workspace_commands():
         ("container-1", "cd /workspace && cat /workspace/app/backend/core/config.py")
     ]
     assert result.output == "ok"
+
+
+@pytest.mark.asyncio
+async def test_container_bash_session_allows_read_only_interpreter_workspace_inspection():
+    class FakeRuntimeService:
+        def __init__(self):
+            self.calls: list[tuple[str, str]] = []
+
+        async def exec(self, container_name, command):
+            self.calls.append((container_name, command))
+            return 0, "/workspace/app/backend/core/config.py", ""
+
+    runtime_service = FakeRuntimeService()
+    session = ContainerBashSession(runtime_service, "container-1")
+
+    result = await session.run('python -c "print(\'/workspace/app/backend/core/config.py\')"')
+
+    assert runtime_service.calls == [
+        (
+            "container-1",
+            'cd /workspace && python -c "print(\'/workspace/app/backend/core/config.py\')"',
+        )
+    ]
+    assert result.output == "/workspace/app/backend/core/config.py"
 
 
 @pytest.mark.asyncio

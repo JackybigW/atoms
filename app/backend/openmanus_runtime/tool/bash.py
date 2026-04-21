@@ -119,11 +119,6 @@ class _BashSession:
         return CLIResult(output=output, error=error)
 
 
-_WRITE_REDIRECTION_TOKENS = {">", ">>", ">|", "1>", "1>>", "2>", "2>>", "&>", "&>>"}
-_WRITE_COMMANDS_WITH_DESTINATION = {"cp", "mv", "ln", "install"}
-_WRITE_COMMANDS_WITH_TARGETS = {"touch", "mkdir", "rm", "rmdir", "tee"}
-_IN_PLACE_EDIT_COMMANDS = {"sed", "perl"}
-_WORKSPACE_PATH_LITERAL_RE = re.compile(r"(/workspace(?:/[^\s'\"`;&|<>]+)+)")
 _WRITE_INTENT_RE = re.compile(
     r"(?:"
     r"\b(?:cp|mv|ln|install|touch|mkdir|rm|rmdir|tee)\b"
@@ -138,62 +133,26 @@ _WRITE_INTENT_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
-
-
-def _is_option(token: str) -> bool:
-    return token.startswith("-")
-
-
-def _extract_targets(command: str) -> list[Path]:
-    tokens = shlex.split(command)
-    if not tokens:
-        return []
-
-    targets: list[Path] = []
-    command_name = tokens[0]
-    idx = 1
-    while idx < len(tokens):
-        token = tokens[idx]
-        matched_redirection = next(
-            (redir for redir in sorted(_WRITE_REDIRECTION_TOKENS, key=len, reverse=True) if token == redir or token.startswith(redir)),
-            None,
-        )
-        if matched_redirection is not None:
-            remainder = token[len(matched_redirection) :]
-            if remainder:
-                targets.append(Path(remainder))
-            elif idx + 1 < len(tokens):
-                targets.append(Path(tokens[idx + 1]))
-            idx += 2
-            continue
-        if token in _WRITE_REDIRECTION_TOKENS:
-            if idx + 1 < len(tokens):
-                targets.append(Path(tokens[idx + 1]))
-            idx += 2
-            continue
-        idx += 1
-
-    positional_tokens = [token for token in tokens[1:] if not _is_option(token)]
-
-    if command_name in _WRITE_COMMANDS_WITH_DESTINATION and positional_tokens:
-        targets.append(Path(positional_tokens[-1]))
-    elif command_name in _WRITE_COMMANDS_WITH_TARGETS:
-        targets.extend(Path(token) for token in positional_tokens)
-    elif command_name in _IN_PLACE_EDIT_COMMANDS and any(
-        token == "-i" or token.startswith("-i") for token in tokens[1:]
-    ) and positional_tokens:
-        targets.append(Path(positional_tokens[-1]))
-
-    return targets
+_HIGHRISK_INLINE_RE = re.compile(r"\b(?:sh|bash|python3?|perl|ruby|node)\s+-[a-z]*c\b", re.IGNORECASE)
+_WORKSPACE_PATH_LITERAL_RE = re.compile(r"(/workspace(?:/[^\s'\"`;&|<>]+)+)")
+_WORKSPACE_BACKEND_FRAGMENT_RE = re.compile(r"/workspace/app/backend(?:\b|/)")
+_PROTECTED_SUFFIX_FRAGMENT_RE = re.compile(r"(?:/core/|/models/|/main\.py\b|/lambda_handler\.py\b)")
 
 
 def _validate_bash_write_targets(command: str) -> None:
     if not _WRITE_INTENT_RE.search(command):
         return
 
+    if _HIGHRISK_INLINE_RE.search(command) and "/workspace" in command:
+        if _WORKSPACE_BACKEND_FRAGMENT_RE.search(command) and _PROTECTED_SUFFIX_FRAGMENT_RE.search(command):
+            raise ToolError("Workspace write to protected backend path is not allowed")
+
     workspace_targets = [Path(match.group(1)) for match in _WORKSPACE_PATH_LITERAL_RE.finditer(command)]
     for target in workspace_targets:
         validate_workspace_write_path(target)
+
+    if _WORKSPACE_BACKEND_FRAGMENT_RE.search(command) and _PROTECTED_SUFFIX_FRAGMENT_RE.search(command):
+        raise ToolError("Workspace write to protected backend path is not allowed")
 
 
 class Bash(BaseTool):
