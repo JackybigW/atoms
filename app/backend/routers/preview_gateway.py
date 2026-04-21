@@ -108,6 +108,9 @@ async def proxy_preview_websocket(
     session = _validate_preview_session(
         await WorkspaceRuntimeSessionsService(db).get_by_preview_session_key(preview_session_key)
     )
+    if service not in {"frontend", "backend"}:
+        await websocket.close(code=1011, reason="Invalid preview service")
+        return
     upstream_url = build_preview_websocket_upstream(session, service, path)
     await websocket.accept()
     try:
