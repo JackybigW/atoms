@@ -70,6 +70,7 @@ function WorkspaceInner() {
     terminalLogs,
     previewKey,
     reloadPreview,
+    taskSummaries,
   } = useWorkspace();
   const projectId = id ? parseInt(id) : null;
 
@@ -195,7 +196,26 @@ function WorkspaceInner() {
   const renderPanel = (tab: TabType) => {
     switch (tab) {
       case "chat":
-        return <ChatPanel mode={mode} />;
+        return (
+          <div className="h-full flex flex-col">
+            {taskSummaries.length > 0 && (
+              <div className="flex-shrink-0 border-b border-[#27272A] px-3 py-1.5 flex flex-wrap gap-x-4 gap-y-0.5" data-testid="task-summary-strip">
+                {taskSummaries.map((t) => (
+                  <span key={t.id} className="text-[10px] text-[#71717A]">
+                    <span className="text-[#A1A1AA]">{t.subject}</span>
+                    {" · "}
+                    <span className={t.status === "completed" ? "text-[#22C55E]" : t.status === "in_progress" ? "text-[#3B82F6]" : "text-[#71717A]"}>
+                      {t.status}
+                    </span>
+                  </span>
+                ))}
+              </div>
+            )}
+            <div className="flex-1 min-h-0">
+              <ChatPanel mode={mode} />
+            </div>
+          </div>
+        );
       case "editor":
         return <CodeEditor />;
       case "preview": {

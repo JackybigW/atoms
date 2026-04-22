@@ -1,7 +1,8 @@
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as WorkspaceContextModule from "@/contexts/WorkspaceContext";
 import ProjectWorkspacePage from "./ProjectWorkspace";
 
 vi.mock("@/contexts/AuthContext", () => ({
@@ -54,6 +55,54 @@ vi.mock("@/lib/api", () => ({
     },
   },
 }));
+
+describe("task summary strip", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("shows task strip when task summaries are present", async () => {
+    const spy = vi.spyOn(WorkspaceContextModule, "useWorkspace").mockReturnValue({
+      setProjectId: vi.fn(),
+      previewHtml: "",
+      preview: {},
+      setPreview: vi.fn(),
+      clearPreview: vi.fn(),
+      terminalLogs: [],
+      previewKey: 0,
+      reloadPreview: vi.fn(),
+      taskSummaries: [{ id: 1, subject: "Create homepage", status: "in_progress", blocked_by: [] }],
+      setTaskSummaries: vi.fn(),
+      files: [],
+      setFiles: vi.fn(),
+      writeFile: vi.fn(),
+      writeMultipleFiles: vi.fn(),
+      projectId: 42,
+      previewUrl: "",
+      setPreviewUrl: vi.fn(),
+      addTerminalLog: vi.fn(),
+      sessionStatus: "",
+      progressItems: [],
+      applyFileSnapshot: vi.fn(),
+      applyRealtimeEvent: vi.fn(),
+      fileVersion: 0,
+      reloadFiles: vi.fn(),
+    } as ReturnType<typeof WorkspaceContextModule.useWorkspace>);
+
+    render(
+      <MemoryRouter initialEntries={["/workspace/42"]}>
+        <Routes>
+          <Route path="/workspace/:id" element={<ProjectWorkspacePage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    expect(await screen.findByTestId("task-summary-strip")).toBeInTheDocument();
+    expect(screen.getByText("Create homepage")).toBeInTheDocument();
+
+    spy.mockRestore();
+  });
+});
 
 it("shows degraded banner when backend is not yet running", async () => {
   render(
