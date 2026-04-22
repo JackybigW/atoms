@@ -67,6 +67,10 @@ class AgentTaskStore:
     def _serialize_blocked_by(blocked_by: Optional[list[str]]) -> str:
         if blocked_by is None:
             return "[]"
+        if not isinstance(blocked_by, list):
+            raise TypeError(f"blocked_by must be a list, got {type(blocked_by).__name__}")
+        if not all(isinstance(item, str) for item in blocked_by):
+            raise ValueError("blocked_by entries must all be strings")
         return json.dumps(blocked_by, ensure_ascii=False)
 
     @staticmethod

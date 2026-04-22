@@ -132,3 +132,29 @@ async def test_agent_task_store_list_tasks_rejects_non_string_entries_in_blocked
     listed = await store.list_tasks(project_id=42, request_key="req-6")
 
     assert listed[0].blocked_by == []
+
+
+@pytest.mark.asyncio
+async def test_agent_task_store_create_task_rejects_non_string_blocked_by_entries(db_session):
+    store = AgentTaskStore(db_session)
+    with pytest.raises(ValueError):
+        await store.create_task(
+            project_id=42,
+            request_key="req-bad",
+            subject="Bad task",
+            description="",
+            blocked_by=["valid", 123],
+        )
+
+
+@pytest.mark.asyncio
+async def test_agent_task_store_create_task_rejects_non_list_blocked_by(db_session):
+    store = AgentTaskStore(db_session)
+    with pytest.raises((ValueError, TypeError)):
+        await store.create_task(
+            project_id=42,
+            request_key="req-bad2",
+            subject="Bad task",
+            description="",
+            blocked_by="not-a-list",  # type: ignore[arg-type]
+        )
