@@ -5,11 +5,16 @@ from openmanus_runtime.tool.base import BaseTool, CLIResult
 
 
 def _render_todo_markdown(items: list[dict]) -> str:
+    _STATUS_MARKERS = {
+        "completed": "x",
+        "in_progress": ">",
+        "blocked": "!",
+    }
     lines = ["# Todo\n\n"]
     for item in items:
         status = item.get("status", "pending")
-        check = "x" if status == "completed" else " "
-        lines.append(f"- [{check}] {item.get('text', '')}\n")
+        marker = _STATUS_MARKERS.get(status, " ")
+        lines.append(f"- [{marker}] {item.get('text', '')}\n")
     return "".join(lines)
 
 
@@ -32,7 +37,7 @@ class TodoWriteTool(BaseTool):
                         "text": {"type": "string"},
                         "status": {
                             "type": "string",
-                            "enum": ["pending", "in_progress", "completed"],
+                            "enum": ["pending", "in_progress", "completed", "blocked"],
                         },
                     },
                     "required": ["id", "text", "status"],

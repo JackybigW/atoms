@@ -2,7 +2,10 @@ import re
 from pathlib import Path
 from typing import Optional
 
-_DEFAULT_SKILLS_DIR = Path(__file__).parent.parent / "skills_docs"
+_DEFAULT_SKILLS_DIRS = [
+    Path(__file__).parent.parent / "skills_docs",
+    Path(__file__).parent.parent.parent.parent / "skills",
+]
 
 _DESCRIPTION_RE = re.compile(r"##\s+Description\s*\n(.*?)(?:\n##|\Z)", re.DOTALL)
 
@@ -17,7 +20,7 @@ def _extract_description(content: str) -> str:
 
 class AgentSkillLoader:
     def __init__(self, skills_dirs: Optional[list[Path]] = None):
-        self._dirs: list[Path] = skills_dirs if skills_dirs is not None else [_DEFAULT_SKILLS_DIR]
+        self._dirs: list[Path] = skills_dirs if skills_dirs is not None else _DEFAULT_SKILLS_DIRS
         self._index: dict[str, Path] = {}
         self._build_index()
 
