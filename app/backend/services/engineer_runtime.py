@@ -101,9 +101,9 @@ async def run_engineer_session(
         workspace_service.materialize_files(paths.host_root, file_records)
         logger.info("%s materialized %s project files", prefix, len(file_records))
 
-        from services.agent_bootstrap import classify_user_request
+        from services.agent_bootstrap import classify_user_request_async
 
-        bootstrap_ctx = classify_user_request(prompt)
+        bootstrap_ctx = await classify_user_request_async(prompt)
 
         messages_service = MessagesService(db)
         message_history_result = await messages_service.get_list(

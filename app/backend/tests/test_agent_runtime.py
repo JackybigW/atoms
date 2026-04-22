@@ -9,7 +9,14 @@ from openmanus_runtime.streaming import StreamingSWEAgent
 
 from routers.agent_runtime import _serialize_agent_history, router
 from schemas.auth import UserResponse
-from services.agent_bootstrap import build_bootstrap_context, classify_user_request
+from unittest.mock import AsyncMock, patch
+
+from services.agent_bootstrap import (
+    _ClassificationResult,
+    build_bootstrap_context,
+    classify_user_request,
+    classify_user_request_async,
+)
 
 
 def test_classify_user_request_flags_implementation_mode():
@@ -118,6 +125,46 @@ def test_build_bootstrap_context_defaults_to_classification():
     result = build_bootstrap_context("帮我新增一个 billing 页面和后端接口")
     assert result.mode == "implementation"
     assert result.requires_draft_plan is True
+
+
+# ---------------------------------------------------------------------------
+# LLM-based async classifier tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_classify_user_request_async_uses_llm_result():
+    llm_result = _ClassificationResult(mode="implementation", requires_backend_readme=True)
+    with patch("services.agent_bootstrap._classify_with_llm", AsyncMock(return_value=llm_result)):
+        result = await classify_user_request_async("帮我做一个 billing 页面")
+    assert result.mode == "implementation"
+    assert result.requires_backend_readme is True
+    assert result.requires_draft_plan is True
+
+
+@pytest.mark.asyncio
+async def test_classify_user_request_async_conversation_mode():
+    llm_result = _ClassificationResult(mode="conversation", requires_backend_readme=False)
+    with patch("services.agent_bootstrap._classify_with_llm", AsyncMock(return_value=llm_result)):
+        result = await classify_user_request_async("你好，怎么了？")
+    assert result.mode == "conversation"
+    assert result.requires_draft_plan is False
+
+
+@pytest.mark.asyncio
+async def test_classify_user_request_async_falls_back_to_regex_on_llm_error():
+    with patch("services.agent_bootstrap._classify_with_llm", AsyncMock(side_effect=RuntimeError("API down"))):
+        result = await classify_user_request_async("build a landing page")
+    assert result.mode == "implementation"
+
+
+@pytest.mark.asyncio
+async def test_classify_user_request_async_chinese_implementation_without_keyword():
+    """Core motivation: Chinese prompts without English keywords must reach LLM."""
+    llm_result = _ClassificationResult(mode="implementation", requires_backend_readme=False)
+    with patch("services.agent_bootstrap._classify_with_llm", AsyncMock(return_value=llm_result)) as mock_llm:
+        result = await classify_user_request_async("帮我做一个 billing 页面")
+    assert result.mode == "implementation"
+    mock_llm.assert_called_once()
 
 
 class FakeAgent:

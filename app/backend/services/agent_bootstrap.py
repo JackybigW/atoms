@@ -1,5 +1,12 @@
+import logging
+import os
 import re
 from dataclasses import dataclass
+from typing import Literal
+
+from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 
 IMPLEMENTATION_KEYWORDS = (
@@ -63,3 +70,56 @@ def classify_user_request(prompt: str) -> BootstrapContext:
 
 def build_bootstrap_context(prompt: str) -> BootstrapContext:
     return classify_user_request(prompt)
+
+
+# ---------------------------------------------------------------------------
+# LLM-based classifier (async, production path)
+# ---------------------------------------------------------------------------
+
+class _ClassificationResult(BaseModel):
+    mode: Literal["implementation", "conversation"]
+    requires_backend_readme: bool
+
+_CLASSIFICATION_SYSTEM_PROMPT = """\
+You are a request classifier for an AI coding assistant called Alex.
+Classify the user's request and respond ONLY with a JSON object.
+
+Rules:
+- mode "implementation": user wants code written, features built, pages created, files modified, bugs fixed, or tasks executed
+- mode "conversation": user is asking a question, seeking advice, reviewing, or discussing without requesting code changes
+- requires_backend_readme: true if the request involves backend/API/database/auth/storage/payment features
+
+Edge cases:
+- "帮我做/创建/新增/添加 X" → implementation
+- "Can you / Could you / Please + [action]" → implementation
+- "How do I / What's the best way to / Should we" → conversation
+- "Can I / Should I" (self-question) → conversation
+
+Respond with valid JSON only, no markdown fences."""
+
+
+async def _classify_with_llm(prompt: str) -> _ClassificationResult:
+    from langchain_deepseek import ChatDeepSeek
+
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    llm = ChatDeepSeek(model="deepseek-chat", api_key=api_key, temperature=0)
+    structured_llm = llm.with_structured_output(_ClassificationResult, method="json_mode")
+    result = await structured_llm.ainvoke([
+        {"role": "system", "content": _CLASSIFICATION_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ])
+    return result
+
+
+async def classify_user_request_async(prompt: str) -> BootstrapContext:
+    """LLM-based classifier with regex fallback on error."""
+    try:
+        result = await _classify_with_llm(prompt)
+        return BootstrapContext(
+            mode=result.mode,
+            requires_backend_readme=result.requires_backend_readme,
+            requires_draft_plan=result.mode == "implementation",
+        )
+    except Exception as exc:
+        logger.warning("LLM classification failed, falling back to regex: %s", exc)
+        return classify_user_request(prompt)
