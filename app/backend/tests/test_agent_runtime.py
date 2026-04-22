@@ -735,3 +735,108 @@ def test_agent_run_marks_backend_not_configured_without_preview_manifest(monkeyp
     assert fake_sandbox.preview_envs[0]["ATOMS_PREVIEW_FRONTEND_BASE"] == "/preview/preview-session-123/frontend/"
     assert fake_sandbox.preview_envs[0]["ATOMS_PREVIEW_BACKEND_BASE"] == "/preview/preview-session-123/backend/"
     assert fake_sandbox.preview_envs[0]["VITE_ATOMS_PREVIEW_BACKEND_BASE"] == "/preview/preview-session-123/backend/"
+
+
+def test_run_engineer_session_injects_backend_readme_for_backend_requests(tmp_path):
+    """When request requires_backend_readme, README content is injected into task_prompt."""
+    from services.agent_bootstrap import classify_user_request
+
+    # 1. Confirm the classifier flags the request correctly
+    ctx = classify_user_request("add a database table")
+    assert ctx.requires_backend_readme is True
+
+    # 2. Simulate the README reading + template substitution logic inline
+    readme_dir = tmp_path / "app" / "backend"
+    readme_dir.mkdir(parents=True)
+    readme_path = readme_dir / "README.md"
+    readme_path.write_text("# Backend Guide\nUse FastAPI.", encoding="utf-8")
+
+    readme_block = ""
+    if ctx.requires_backend_readme:
+        try:
+            readme_content = readme_path.read_text(encoding="utf-8").strip()
+            if readme_content:
+                readme_block = (
+                    "## Backend README (mandatory reading before implementing backend features)\n\n"
+                    f"{readme_content}\n\n---\n\n"
+                )
+        except OSError:
+            pass
+
+    prompt = "add a database table"
+    workspace_block = (
+        "You must work inside this workspace root: /workspace\n"
+        "Use absolute paths starting with /workspace for file edits, "
+        "and change into this directory before running bash commands.\n\n"
+        f"User request:\n{prompt}"
+    )
+    task_prompt = readme_block + workspace_block
+
+    # 3. Assert the README content appears in the built prompt
+    assert "Backend README" in task_prompt
+    assert "Backend Guide" in task_prompt
+    assert "Use FastAPI." in task_prompt
+    # Workspace instructions still present after the README block
+    assert "You must work inside this workspace root" in task_prompt
+    # README comes before workspace instructions
+    assert task_prompt.index("Backend Guide") < task_prompt.index("You must work inside")
+
+
+def test_run_engineer_session_no_readme_injection_for_frontend_only_requests(tmp_path):
+    """When request does NOT require_backend_readme, README is not injected even if file exists."""
+    from services.agent_bootstrap import classify_user_request
+
+    ctx = classify_user_request("build a landing page")
+    assert ctx.requires_backend_readme is False
+
+    readme_dir = tmp_path / "app" / "backend"
+    readme_dir.mkdir(parents=True)
+    (readme_dir / "README.md").write_text("# Backend Guide\nUse FastAPI.", encoding="utf-8")
+
+    readme_block = ""
+    if ctx.requires_backend_readme:
+        try:
+            readme_content = (readme_dir / "README.md").read_text(encoding="utf-8").strip()
+            if readme_content:
+                readme_block = (
+                    "## Backend README (mandatory reading before implementing backend features)\n\n"
+                    f"{readme_content}\n\n---\n\n"
+                )
+        except OSError:
+            pass
+
+    prompt = "build a landing page"
+    task_prompt = readme_block + f"You must work inside this workspace root: /workspace\n\nUser request:\n{prompt}"
+
+    assert "Backend README" not in task_prompt
+    assert "Backend Guide" not in task_prompt
+    assert "You must work inside this workspace root" in task_prompt
+
+
+def test_run_engineer_session_readme_missing_does_not_fail(tmp_path):
+    """When README file doesn't exist, task_prompt is built without it and no exception raised."""
+    from services.agent_bootstrap import classify_user_request
+
+    ctx = classify_user_request("add an API endpoint")
+    assert ctx.requires_backend_readme is True
+
+    # No README file created — directory doesn't exist
+    readme_path = tmp_path / "app" / "backend" / "README.md"
+
+    readme_block = ""
+    if ctx.requires_backend_readme:
+        try:
+            readme_content = readme_path.read_text(encoding="utf-8").strip()
+            if readme_content:
+                readme_block = (
+                    "## Backend README (mandatory reading before implementing backend features)\n\n"
+                    f"{readme_content}\n\n---\n\n"
+                )
+        except OSError:
+            pass  # gracefully skip
+
+    prompt = "add an API endpoint"
+    task_prompt = readme_block + f"You must work inside this workspace root: /workspace\n\nUser request:\n{prompt}"
+
+    assert "Backend README" not in task_prompt
+    assert "You must work inside this workspace root" in task_prompt

@@ -101,6 +101,10 @@ async def run_engineer_session(
         workspace_service.materialize_files(paths.host_root, file_records)
         logger.info("%s materialized %s project files", prefix, len(file_records))
 
+        from services.agent_bootstrap import classify_user_request
+
+        bootstrap_ctx = classify_user_request(prompt)
+
         messages_service = MessagesService(db)
         message_history_result = await messages_service.get_list(
             skip=0,
@@ -192,7 +196,21 @@ async def run_engineer_session(
             }
         )
 
-        task_prompt = (
+        readme_block = ""
+        if bootstrap_ctx.requires_backend_readme:
+            readme_path = paths.host_root / "app" / "backend" / "README.md"
+            try:
+                readme_content = readme_path.read_text(encoding="utf-8").strip()
+                if readme_content:
+                    readme_block = (
+                        "## Backend README (mandatory reading before implementing backend features)\n\n"
+                        f"{readme_content}\n\n---\n\n"
+                    )
+                    logger.info("%s injected backend README chars=%d", prefix, len(readme_content))
+            except OSError:
+                logger.debug("%s backend README not found at %s", prefix, readme_path)
+
+        task_prompt = readme_block + (
             f"You must work inside this workspace root: /workspace\n"
             "Use absolute paths starting with /workspace for file edits, "
             "and change into this directory before running bash commands.\n"
