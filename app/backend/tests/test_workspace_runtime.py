@@ -135,6 +135,89 @@ def test_ensure_workspace_runtime_returns_preview_bundle(monkeypatch):
     assert payload["backend_status"] == "starting"
 
 
+import pytest
+import pytest_asyncio
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from core.database import Base
+from routers.workspace_runtime import ensure_runtime_for_project
+from services.workspace_runtime_sessions import WorkspaceRuntimeSessionsService
+
+
+@pytest_asyncio.fixture
+async def memory_db():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        import models  # noqa: F401
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+        async with session_maker() as db:
+            yield db
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_ensure_runtime_calls_start_preview_services(memory_db):
+    """start_preview_services must be called so the Vite dev server starts."""
+    start_preview_mock = AsyncMock(return_value=(0, "", ""))
+
+    with (
+        patch("routers.workspace_runtime.SandboxRuntimeService") as MockSandbox,
+        patch("routers.workspace_runtime.ProjectWorkspaceService") as MockWorkspace,
+        patch("routers.workspace_runtime.load_preview_contract", return_value=None),
+    ):
+        mock_sandbox = MockSandbox.return_value
+        mock_sandbox.ensure_runtime = AsyncMock(return_value="atoms-user-1-42")
+        mock_sandbox.get_runtime_ports = AsyncMock(
+            return_value={"frontend_port": 32000, "backend_port": None, "preview_port": 32000}
+        )
+        mock_sandbox.start_preview_services = start_preview_mock
+        mock_sandbox.wait_for_service = AsyncMock(return_value=True)
+
+        mock_paths = MagicMock()
+        mock_paths.host_root = Path("/tmp/fake")
+        MockWorkspace.return_value.resolve_paths.return_value = mock_paths
+
+        await ensure_runtime_for_project(memory_db, user_id="user-1", project_id=42)
+
+    start_preview_mock.assert_called_once()
+    call_kwargs = start_preview_mock.call_args
+    env = call_kwargs.kwargs.get("env") or call_kwargs.args[1]
+    assert "ATOMS_PREVIEW_FRONTEND_BASE" in env
+    assert "/preview/" in env["ATOMS_PREVIEW_FRONTEND_BASE"]
+    assert env["ATOMS_PREVIEW_FRONTEND_BASE"].endswith("/frontend/")
+
+
+@pytest.mark.asyncio
+async def test_ensure_runtime_embeds_preview_session_key_in_session(memory_db):
+    """Session must be created with the preview_session_key so the gateway can look it up."""
+    with (
+        patch("routers.workspace_runtime.SandboxRuntimeService") as MockSandbox,
+        patch("routers.workspace_runtime.ProjectWorkspaceService") as MockWorkspace,
+        patch("routers.workspace_runtime.load_preview_contract", return_value=None),
+    ):
+        mock_sandbox = MockSandbox.return_value
+        mock_sandbox.ensure_runtime = AsyncMock(return_value="atoms-user-1-42")
+        mock_sandbox.get_runtime_ports = AsyncMock(
+            return_value={"frontend_port": 32000, "backend_port": None, "preview_port": 32000}
+        )
+        mock_sandbox.start_preview_services = AsyncMock(return_value=(0, "", ""))
+        mock_sandbox.wait_for_service = AsyncMock(return_value=True)
+
+        mock_paths = MagicMock()
+        mock_paths.host_root = Path("/tmp/fake")
+        MockWorkspace.return_value.resolve_paths.return_value = mock_paths
+
+        session = await ensure_runtime_for_project(memory_db, user_id="user-1", project_id=42)
+
+    assert session.preview_session_key is not None
+    assert len(session.preview_session_key) > 10
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
