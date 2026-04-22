@@ -78,6 +78,46 @@ async def test_project_file_operator_allows_docs_and_frontend_paths(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_project_file_operator_blocks_non_plan_writes_until_plan_exists(tmp_path):
+    gate = ApprovalGate(requires_approval=True)
+    gate.approve(request_key="req-1")
+    operator = ProjectFileOperator(host_root=tmp_path, container_root=Path("/workspace"), approval_gate=gate)
+
+    with pytest.raises(ToolError):
+        await operator.write_file(
+            "/workspace/app/frontend/src/App.tsx",
+            "export default function App() { return null }",
+        )
+
+
+@pytest.mark.asyncio
+async def test_project_file_operator_normalizes_docs_traversal_before_gate_checks(tmp_path):
+    gate = ApprovalGate(requires_approval=True)
+    operator = ProjectFileOperator(host_root=tmp_path, container_root=Path("/workspace"), approval_gate=gate)
+
+    with pytest.raises(ToolError):
+        await operator.write_file(
+            "/workspace/docs/../app/frontend/src/App.tsx",
+            "export default function App() { return null }",
+        )
+
+
+@pytest.mark.asyncio
+async def test_project_file_operator_only_marks_real_plan_paths_as_plan_written(tmp_path):
+    gate = ApprovalGate(requires_approval=True)
+    gate.approve(request_key="req-1")
+    operator = ProjectFileOperator(host_root=tmp_path, container_root=Path("/workspace"), approval_gate=gate)
+
+    with pytest.raises(ToolError):
+        await operator.write_file(
+            "/workspace/docs/plans/../../app/frontend/src/fake-plan.md",
+            "export default function App() { return null }",
+        )
+
+    assert gate.plan_path is None
+
+
+@pytest.mark.asyncio
 async def test_str_replace_editor_rejects_protected_backend_paths(tmp_path):
     operator = ProjectFileOperator(
         host_root=tmp_path / "user-1" / "1",
@@ -187,6 +227,47 @@ async def test_container_bash_session_blocks_workspace_write_targets():
 
 
 @pytest.mark.asyncio
+async def test_container_bash_session_blocks_workspace_writes_before_approval():
+    class FakeRuntimeService:
+        def __init__(self):
+            self.calls: list[tuple[str, str]] = []
+
+        async def exec(self, container_name, command):
+            self.calls.append((container_name, command))
+            return 0, "ok", ""
+
+    runtime_service = FakeRuntimeService()
+    gate = ApprovalGate(requires_approval=True)
+    session = ContainerBashSession(runtime_service, "container-1", approval_gate=gate)
+
+    with pytest.raises(ToolError):
+        await session.run("echo hi >/workspace/app/frontend/src/App.tsx")
+
+    assert runtime_service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_container_bash_session_blocks_workspace_writes_before_plan_written():
+    class FakeRuntimeService:
+        def __init__(self):
+            self.calls: list[tuple[str, str]] = []
+
+        async def exec(self, container_name, command):
+            self.calls.append((container_name, command))
+            return 0, "ok", ""
+
+    runtime_service = FakeRuntimeService()
+    gate = ApprovalGate(requires_approval=True)
+    gate.approve(request_key="req-1")
+    session = ContainerBashSession(runtime_service, "container-1", approval_gate=gate)
+
+    with pytest.raises(ToolError):
+        await session.run("echo hi >/workspace/app/frontend/src/App.tsx")
+
+    assert runtime_service.calls == []
+
+
+@pytest.mark.asyncio
 async def test_container_bash_session_blocks_nested_shell_write_targets():
     class FakeRuntimeService:
         def __init__(self):
@@ -259,11 +340,39 @@ async def test_container_bash_session_blocks_split_path_interpreter_write_target
             "python -c \"p='/workspace/app'; open(p + '/backend/core/pwn.py','w').write('x')\""
         )
 
+    with pytest.raises(ToolError):
+        await session.run(
+            "python -c \"p='/workspace'; q='app'; b='back'+'end'; c='co'+'re'; open(f'{p}/{q}/{b}/{c}/pwn.py','w').write('x')\""
+        )
+
     assert runtime_service.calls == []
 
 
 @pytest.mark.asyncio
-async def test_container_bash_session_allows_frontend_write_via_interpreter():
+async def test_container_bash_session_blocks_heredoc_workspace_writes():
+    class FakeRuntimeService:
+        def __init__(self):
+            self.calls: list[tuple[str, str]] = []
+
+        async def exec(self, container_name, command):
+            self.calls.append((container_name, command))
+            return 0, "ok", ""
+
+    runtime_service = FakeRuntimeService()
+    gate = ApprovalGate(requires_approval=True)
+    gate.approve(request_key="req-1")
+    session = ContainerBashSession(runtime_service, "container-1", approval_gate=gate)
+
+    with pytest.raises(ToolError):
+        await session.run(
+            "python - <<'PY'\nfrom pathlib import Path\n(Path('/workspace/app/backend') / 'models' / 'hack.py').write_text('x')\nPY"
+        )
+
+    assert runtime_service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_container_bash_session_blocks_frontend_write_via_interpreter():
     class FakeRuntimeService:
         def __init__(self):
             self.calls: list[tuple[str, str]] = []
@@ -275,11 +384,11 @@ async def test_container_bash_session_allows_frontend_write_via_interpreter():
     runtime_service = FakeRuntimeService()
     session = ContainerBashSession(runtime_service, "container-1")
 
-    # Writing to frontend is allowed even via interpreter
-    result = await session.run(
-        "python -c \"open('/workspace/app/frontend/src/App.tsx','w').write('<div>hi</div>')\""
-    )
-    assert len(runtime_service.calls) == 1
+    with pytest.raises(ToolError):
+        await session.run(
+            "python -c \"open('/workspace/app/frontend/src/App.tsx','w').write('<div>hi</div>')\""
+        )
+    assert runtime_service.calls == []
 
 
 @pytest.mark.asyncio
@@ -533,8 +642,17 @@ def test_approval_gate_blocks_write_before_approval():
 
 def test_approval_gate_allows_write_after_approval():
     gate = ApprovalGate(requires_approval=True)
-    gate.approve()
-    gate.check_write("/workspace/app/frontend/src/App.tsx")  # should not raise
+    gate.approve(request_key="req-1")
+    with pytest.raises(ToolError):
+        gate.check_write("/workspace/app/frontend/src/App.tsx")
+
+
+def test_approval_gate_allows_plan_write_after_approval():
+    gate = ApprovalGate(requires_approval=True)
+    gate.approve(request_key="req-1")
+    gate.check_write("/workspace/docs/plans/2026-04-22-auth.md")  # should not raise
+    gate.record_plan_written("/workspace/docs/plans/2026-04-22-auth.md")
+    gate.check_write("/workspace/app/frontend/src/App.tsx")  # should not raise once plan exists
 
 
 def test_approval_gate_off_when_not_required():
@@ -555,16 +673,15 @@ async def test_project_file_operator_blocks_write_before_approval(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_project_file_operator_allows_docs_write_before_approval(tmp_path):
+async def test_project_file_operator_blocks_docs_write_before_approval(tmp_path):
     gate = ApprovalGate(requires_approval=True)
     operator = ProjectFileOperator(
         host_root=tmp_path,
         container_root=Path("/workspace"),
         approval_gate=gate,
     )
-    # docs/ is exempt from gate — should succeed
-    await operator.write_file("/workspace/docs/todo.md", "# Todo")
-    assert (tmp_path / "docs" / "todo.md").exists()
+    with pytest.raises(ToolError):
+        await operator.write_file("/workspace/docs/todo.md", "# Todo")
 
 
 # ---------------------------------------------------------------------------
@@ -573,15 +690,15 @@ async def test_project_file_operator_allows_docs_write_before_approval(tmp_path)
 
 def test_approval_gate_plan_required_but_not_written_blocks_todo():
     gate = ApprovalGate(requires_approval=True)
-    gate.approve()
+    gate.approve(request_key="req-1")
     with pytest.raises(ToolError):
         gate.check_todo_write()
 
 
 def test_approval_gate_plan_written_allows_todo():
     gate = ApprovalGate(requires_approval=True)
-    gate.approve()
-    gate.record_plan_written()
+    gate.approve(request_key="req-1")
+    gate.record_plan_written("/workspace/docs/plans/2026-04-22-billing.md")
     gate.check_todo_write()  # must not raise
 
 
@@ -592,37 +709,38 @@ def test_approval_gate_no_approval_required_skips_plan_check():
 
 def test_approval_gate_record_plan_written_is_idempotent():
     gate = ApprovalGate(requires_approval=True)
-    gate.approve()
-    gate.record_plan_written()
-    gate.record_plan_written()
+    gate.approve(request_key="req-1")
+    gate.record_plan_written("/workspace/docs/plans/2026-04-22-billing.md")
+    gate.record_plan_written("/workspace/docs/plans/2026-04-22-billing.md")
     gate.check_todo_write()  # must not raise
 
 
 @pytest.mark.asyncio
 async def test_project_file_operator_records_plan_write_in_gate(tmp_path):
     gate = ApprovalGate(requires_approval=True)
-    gate.approve()
+    gate.approve(request_key="req-1")
     operator = ProjectFileOperator(
         host_root=tmp_path,
         container_root=Path("/workspace"),
         approval_gate=gate,
     )
-    assert not gate._plan_written
+    assert gate.plan_path is None
     await operator.write_file("/workspace/docs/plans/2026-04-22-billing.md", "# Plan")
-    assert gate._plan_written
+    assert gate.plan_path == "/workspace/docs/plans/2026-04-22-billing.md"
 
 
 @pytest.mark.asyncio
 async def test_project_file_operator_does_not_record_non_md_file_in_plans(tmp_path):
     gate = ApprovalGate(requires_approval=True)
-    gate.approve()
+    gate.approve(request_key="req-1")
     operator = ProjectFileOperator(
         host_root=tmp_path,
         container_root=Path("/workspace"),
         approval_gate=gate,
     )
-    await operator.write_file("/workspace/docs/plans/notes.txt", "not a plan")
-    assert not gate._plan_written
+    with pytest.raises(ToolError):
+        await operator.write_file("/workspace/docs/plans/notes.txt", "not a plan")
+    assert gate.plan_path is None
 
 
 @pytest.mark.asyncio
@@ -631,7 +749,7 @@ async def test_todo_write_blocked_without_plan(tmp_path):
     from openmanus_runtime.tool.todo_write import TodoWriteTool
 
     gate = ApprovalGate(requires_approval=True)
-    gate.approve()
+    gate.approve(request_key="req-1")
 
     events = []
     operator = ProjectFileOperator(
@@ -654,7 +772,7 @@ async def test_todo_write_allowed_after_plan_write(tmp_path):
     from openmanus_runtime.tool.todo_write import TodoWriteTool
 
     gate = ApprovalGate(requires_approval=True)
-    gate.approve()
+    gate.approve(request_key="req-1")
 
     events = []
     operator = ProjectFileOperator(

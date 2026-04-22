@@ -11,6 +11,7 @@ class AgentTasks(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True, nullable=False)
     project_id = Column(Integer, index=True, nullable=False)
     request_key = Column(String(64), index=True, nullable=False)
+    task_key = Column(String(64), index=True, nullable=False, default="")
     subject = Column(String(255), nullable=False)
     description = Column(Text, nullable=False, default="")
     status = Column(String(32), nullable=False, default="pending")

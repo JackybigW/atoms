@@ -1,13 +1,12 @@
 import asyncio
 import os
-import shlex
 import re
 from pathlib import Path
 from typing import Optional
 
 from openmanus_runtime.exceptions import ToolError
 from openmanus_runtime.tool.base import BaseTool, CLIResult
-from openmanus_runtime.tool.file_operators import validate_workspace_write_path
+from openmanus_runtime.tool.file_operators import normalize_workspace_path, validate_workspace_write_path
 
 
 _BASH_DESCRIPTION = """Execute a bash command in the terminal.
@@ -134,29 +133,36 @@ _WRITE_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 _HIGHRISK_INLINE_RE = re.compile(r"\b(?:sh|bash|python3?|perl|ruby|node)\s+-[a-z]*c\b", re.IGNORECASE)
+_HEREDOC_RE = re.compile(r"<<[-~]?(?:'[^']*'|\"[^\"]*\"|[A-Za-z_][A-Za-z0-9_]*)")
 _WORKSPACE_PATH_LITERAL_RE = re.compile(r"(/workspace(?:/[^\s'\"`;&|<>]+)+)")
-_WORKSPACE_BACKEND_FRAGMENT_RE = re.compile(r"/workspace/app/backend(?:\b|/)")
-_PROTECTED_SUFFIX_FRAGMENT_RE = re.compile(r"(?:/core/|/models/|/main\.py\b|/lambda_handler\.py\b)")
-_BACKEND_WORD_RE = re.compile(r"\bbackend\b")
+_RELATIVE_WORKSPACE_PATH_RE = re.compile(r"((?:app/(?:frontend|backend)|docs|\.atoms)(?:/[^\s'\"`;&|<>]+)+)")
 
 
-def _validate_bash_write_targets(command: str) -> None:
+def _validate_bash_write_targets(command: str, approval_gate=None) -> None:
     if not _WRITE_INTENT_RE.search(command):
         return
 
-    if _HIGHRISK_INLINE_RE.search(command) and "/workspace" in command:
-        _has_backend_fragment = bool(_WORKSPACE_BACKEND_FRAGMENT_RE.search(command))
-        _has_protected_suffix = bool(_PROTECTED_SUFFIX_FRAGMENT_RE.search(command))
-        _has_backend_word = bool(_BACKEND_WORD_RE.search(command))
-        if _has_backend_fragment or (_has_backend_word and _has_protected_suffix):
-            raise ToolError("Workspace write to protected backend path is not allowed")
+    if _HIGHRISK_INLINE_RE.search(command) or _HEREDOC_RE.search(command):
+        raise ToolError(
+            "Inline interpreter and heredoc writes are not allowed in bash. "
+            "Use str_replace_editor for workspace file mutations."
+        )
 
-    workspace_targets = [Path(match.group(1)) for match in _WORKSPACE_PATH_LITERAL_RE.finditer(command)]
-    for target in workspace_targets:
+    workspace_targets = [normalize_workspace_path(match.group(1)) for match in _WORKSPACE_PATH_LITERAL_RE.finditer(command)]
+    relative_targets = [
+        normalize_workspace_path(f"/workspace/{match.group(1)}")
+        for match in _RELATIVE_WORKSPACE_PATH_RE.finditer(command)
+    ]
+    candidate_targets = workspace_targets + relative_targets
+    if not candidate_targets:
+        raise ToolError(
+            "Workspace write target could not be validated. "
+            "Use a direct absolute /workspace path or str_replace_editor."
+        )
+    for target in candidate_targets:
+        if approval_gate is not None:
+            approval_gate.check_write(target)
         validate_workspace_write_path(target)
-
-    if _WORKSPACE_BACKEND_FRAGMENT_RE.search(command) and _PROTECTED_SUFFIX_FRAGMENT_RE.search(command):
-        raise ToolError("Workspace write to protected backend path is not allowed")
 
 
 class Bash(BaseTool):
@@ -201,12 +207,13 @@ class Bash(BaseTool):
 class ContainerBashSession:
     """A bash session that delegates command execution to a running Docker container."""
 
-    def __init__(self, runtime_service, container_name: str):
+    def __init__(self, runtime_service, container_name: str, approval_gate=None):
         self.runtime_service = runtime_service
         self.container_name = container_name
+        self.approval_gate = approval_gate
 
     async def run(self, command: str) -> CLIResult:
-        _validate_bash_write_targets(command)
+        _validate_bash_write_targets(command, approval_gate=self.approval_gate)
         returncode, stdout, stderr = await self.runtime_service.exec(
             self.container_name,
             f"cd /workspace && {command}",
@@ -220,9 +227,9 @@ class ContainerBash(Bash):
     _container_session: Optional[ContainerBashSession] = None
 
     @classmethod
-    def with_session(cls, runtime_service, container_name: str) -> "ContainerBash":
+    def with_session(cls, runtime_service, container_name: str, approval_gate=None) -> "ContainerBash":
         tool = cls()
-        tool._container_session = ContainerBashSession(runtime_service, container_name)
+        tool._container_session = ContainerBashSession(runtime_service, container_name, approval_gate=approval_gate)
         return tool
 
     async def execute(

@@ -49,6 +49,10 @@ def _normalize_posix_path(path: PathLike) -> PurePosixPath:
     return PurePosixPath("/", *normalized_parts)
 
 
+def normalize_workspace_path(path: PathLike) -> PurePosixPath:
+    return _normalize_posix_path(path)
+
+
 def _is_under(path: PurePosixPath, root: PurePosixPath) -> bool:
     return path == root or root in path.parents
 
@@ -196,16 +200,15 @@ class ProjectFileOperator(LocalFileOperator):
         return host_path
 
     def _to_host_write_path(self, path: PathLike) -> Path:
+        normalized = normalize_workspace_path(path)
         if self._approval_gate is not None:
-            posix = PurePosixPath(str(path))
             _DOCS_ROOT = PurePosixPath("/workspace/docs")
             _PLANS_ROOT = PurePosixPath("/workspace/docs/plans")
-            if not posix.is_relative_to(_DOCS_ROOT):
-                self._approval_gate.check_write(path)
-            if posix.is_relative_to(_PLANS_ROOT) and posix.suffix == ".md":
-                self._approval_gate.record_plan_written()
-        validate_workspace_write_path(path)
-        return self._to_host_path(path)
+            self._approval_gate.check_write(normalized)
+            if normalized.is_relative_to(_PLANS_ROOT) and normalized.suffix == ".md":
+                self._approval_gate.record_plan_written(str(normalized))
+        validate_workspace_write_path(normalized)
+        return self._to_host_path(str(normalized))
 
     async def read_file(self, path: PathLike) -> str:
         return await super().read_file(self._to_host_path(path))

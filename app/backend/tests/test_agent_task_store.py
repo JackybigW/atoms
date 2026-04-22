@@ -179,3 +179,83 @@ async def test_agent_task_store_update_task_returns_none_for_missing(db_session)
     store = AgentTaskStore(db_session)
     result = await store.update_task(task_id=99999, status="completed")
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_agent_task_store_upserts_by_request_and_task_key(db_session):
+    store = AgentTaskStore(db_session)
+    first = await store.sync_request_tasks(
+        project_id=42,
+        request_key="req-1",
+        source_plan_path="docs/plans/2026-04-22-auth.md",
+        items=[
+            {"id": "task-1", "text": "Create homepage", "status": "pending"},
+            {"id": "task-2", "text": "Add auth", "status": "in_progress"},
+        ],
+    )
+
+    second = await store.sync_request_tasks(
+        project_id=42,
+        request_key="req-1",
+        source_plan_path="docs/plans/2026-04-22-auth.md",
+        items=[
+            {"id": "task-1", "text": "Create landing page", "status": "completed"},
+            {"id": "task-2", "text": "Add auth", "status": "completed"},
+        ],
+    )
+
+    assert [task.task_key for task in first] == ["task-1", "task-2"]
+    assert [task.task_key for task in second] == ["task-1", "task-2"]
+    assert second[0].subject == "Create landing page"
+    assert second[0].source_plan_path == "docs/plans/2026-04-22-auth.md"
+    assert second[0].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_agent_task_store_sync_deletes_stale_tasks_within_request(db_session):
+    store = AgentTaskStore(db_session)
+    await store.sync_request_tasks(
+        project_id=42,
+        request_key="req-1",
+        source_plan_path="docs/plans/2026-04-22-auth.md",
+        items=[
+            {"id": "task-1", "text": "Create homepage", "status": "pending"},
+            {"id": "task-2", "text": "Add auth", "status": "pending"},
+        ],
+    )
+
+    updated = await store.sync_request_tasks(
+        project_id=42,
+        request_key="req-1",
+        source_plan_path="docs/plans/2026-04-22-auth.md",
+        items=[
+            {"id": "task-2", "text": "Add auth", "status": "completed"},
+        ],
+    )
+
+    assert [task.task_key for task in updated] == ["task-2"]
+    listed = await store.list_tasks(project_id=42, request_key="req-1")
+    assert [task.task_key for task in listed] == ["task-2"]
+
+
+@pytest.mark.asyncio
+async def test_agent_task_store_isolates_tasks_across_requests(db_session):
+    store = AgentTaskStore(db_session)
+    await store.sync_request_tasks(
+        project_id=42,
+        request_key="req-1",
+        source_plan_path="docs/plans/2026-04-22-auth.md",
+        items=[{"id": "task-1", "text": "Create homepage", "status": "pending"}],
+    )
+    await store.sync_request_tasks(
+        project_id=42,
+        request_key="req-2",
+        source_plan_path="docs/plans/2026-04-22-billing.md",
+        items=[{"id": "task-1", "text": "Create billing page", "status": "pending"}],
+    )
+
+    req1 = await store.list_tasks(project_id=42, request_key="req-1")
+    req2 = await store.list_tasks(project_id=42, request_key="req-2")
+
+    assert [task.subject for task in req1] == ["Create homepage"]
+    assert [task.subject for task in req2] == ["Create billing page"]

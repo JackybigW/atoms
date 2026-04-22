@@ -158,6 +158,14 @@ async def test_classify_user_request_async_falls_back_to_regex_on_llm_error():
 
 
 @pytest.mark.asyncio
+async def test_classify_user_request_async_fails_closed_for_chinese_implementation_on_llm_error():
+    with patch("services.agent_bootstrap._classify_with_llm", AsyncMock(side_effect=RuntimeError("API down"))):
+        result = await classify_user_request_async("帮我做一个 billing 页面")
+    assert result.mode == "implementation"
+    assert result.requires_draft_plan is True
+
+
+@pytest.mark.asyncio
 async def test_classify_user_request_async_chinese_implementation_without_keyword():
     """Core motivation: Chinese prompts without English keywords must reach LLM."""
     llm_result = _ClassificationResult(mode="implementation", requires_backend_readme=False)

@@ -16,11 +16,17 @@ IMPLEMENTATION_KEYWORDS = (
     "add",
     "update",
     "modify",
+    "做",
+    "搭建",
+    "开发",
+    "实现",
+    "创建",
     "新增",
     "添加",
     "修改",
     "增加",
     "fix",
+    "修复",
 )
 BACKEND_KEYWORDS = (
     "api",
@@ -40,6 +46,10 @@ _ADVISORY_QUESTION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _POLITE_EXECUTION_PATTERN = re.compile(r"^(?:can\s+you|could\s+you|please)\b", re.IGNORECASE)
+_CHINESE_ADVISORY_PATTERN = re.compile(r"^(?:如何|怎么|怎样|为什么|是否|应不应该|应该如何|怎么做|可以如何|能否|可否)")
+_CHINESE_EXECUTION_PATTERN = re.compile(
+    r"^(?:(?:请|麻烦(?:你)?|帮我|帮忙).*(?:做|搭建|开发|实现|创建|新增|添加|修改|增加|修复)|(?:做|搭建|开发|实现|创建|新增|添加|修改|增加|修复).*)"
+)
 
 
 @dataclass(frozen=True)
@@ -56,9 +66,15 @@ def _contains_keyword(prompt: str, keywords: tuple[str, ...]) -> bool:
 def classify_user_request(prompt: str) -> BootstrapContext:
     lowered = prompt.lower()
     advisory_question = bool(_ADVISORY_QUESTION_PATTERN.search(lowered))
+    chinese_advisory = bool(_CHINESE_ADVISORY_PATTERN.search(prompt))
     polite_execution = bool(_POLITE_EXECUTION_PATTERN.search(lowered))
-    implementation = bool(_IMPLEMENTATION_PATTERN.search(lowered)) or _contains_keyword(prompt, IMPLEMENTATION_KEYWORDS[6:])
-    if advisory_question and not polite_execution:
+    chinese_execution = bool(_CHINESE_EXECUTION_PATTERN.search(prompt))
+    implementation = (
+        bool(_IMPLEMENTATION_PATTERN.search(lowered))
+        or chinese_execution
+        or _contains_keyword(prompt, IMPLEMENTATION_KEYWORDS[6:])
+    )
+    if (advisory_question and not polite_execution) or chinese_advisory:
         implementation = False
     backend = bool(_BACKEND_PATTERN.search(lowered)) or _contains_keyword(prompt, BACKEND_KEYWORDS)
     return BootstrapContext(

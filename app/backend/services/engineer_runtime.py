@@ -154,6 +154,7 @@ async def run_engineer_session(
         bash_session = ContainerBashSession(
             runtime_service=sandbox_service,
             container_name=container_name,
+            approval_gate=gate,
         )
         llm = llm_builder(model)
         logger.info("%s llm constructed model=%s", prefix, model)
@@ -184,7 +185,6 @@ async def run_engineer_session(
             event_sink=event_sink,
             task_store_factory=lambda: AgentTaskStore(db),
             project_id=project_id,
-            request_key=f"project-{project_id}",
             approval_gate=gate,
         )
         if hasattr(agent, "available_tools") and agent.available_tools is not None:

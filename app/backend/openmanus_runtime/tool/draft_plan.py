@@ -55,6 +55,8 @@ class DraftPlanTool(BaseTool):
     async def execute(self, request_key: str = "request", items: Optional[list] = None, **_kwargs) -> CLIResult:
         if items is None:
             items = []
+        if not (3 <= len(items) <= 7):
+            raise ToolError("draft_plan requires 3 to 7 items")
         from services.agent_draft_plan import DraftPlanState
         state = DraftPlanState(
             project_id=self._project_id,
@@ -72,7 +74,7 @@ class DraftPlanTool(BaseTool):
         except asyncio.TimeoutError:
             raise ToolError("Draft plan approval timed out")
         if self._approval_gate is not None:
-            self._approval_gate.approve()
+            self._approval_gate.approve(request_key=request_key)
         await self._event_sink({
             "type": "draft_plan.approved",
             "request_key": request_key,

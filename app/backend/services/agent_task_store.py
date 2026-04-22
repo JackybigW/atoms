@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
+from sqlalchemy import delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +15,7 @@ class AgentTaskRecord:
     id: int
     project_id: int
     request_key: str
+    task_key: str
     subject: str
     description: str
     status: str
@@ -34,6 +36,7 @@ class AgentTaskStore:
         request_key: str,
         subject: str,
         description: str,
+        task_key: str = "",
         status: str = "pending",
         blocked_by: Optional[list[str]] = None,
         source_plan_path: str = "",
@@ -42,6 +45,7 @@ class AgentTaskStore:
         task = AgentTasks(
             project_id=project_id,
             request_key=request_key,
+            task_key=task_key,
             subject=subject,
             description=description,
             status=status,
@@ -84,6 +88,64 @@ class AgentTaskStore:
         result = await self.db.execute(query)
         return [self._to_record(task) for task in result.scalars().all()]
 
+    async def sync_request_tasks(
+        self,
+        project_id: int,
+        request_key: str,
+        source_plan_path: str,
+        items: list[dict],
+        owner: str = "engineer",
+    ) -> list[AgentTaskRecord]:
+        existing = await self.list_tasks(project_id=project_id, request_key=request_key)
+        existing_by_key = {task.task_key: task for task in existing}
+        seen_keys: list[str] = []
+
+        for item in items:
+            task_key = str(item.get("id") or "").strip()
+            if not task_key:
+                raise ValueError("todo items must include a non-empty id")
+            seen_keys.append(task_key)
+            status = str(item.get("status") or "pending")
+            subject = str(item.get("text") or "")
+            blocked_by = item.get("blocked_by")
+
+            existing_task = existing_by_key.get(task_key)
+            if existing_task is None:
+                await self.create_task(
+                    project_id=project_id,
+                    request_key=request_key,
+                    task_key=task_key,
+                    subject=subject,
+                    description="",
+                    status=status,
+                    blocked_by=blocked_by,
+                    source_plan_path=source_plan_path,
+                    owner=owner,
+                )
+                continue
+
+            task_row = await self.db.get(AgentTasks, existing_task.id)
+            if task_row is None:
+                continue
+            task_row.subject = subject
+            task_row.status = status
+            task_row.blocked_by = self._serialize_blocked_by(blocked_by)
+            task_row.source_plan_path = source_plan_path
+            task_row.owner = owner
+
+        stale_keys = set(existing_by_key) - set(seen_keys)
+        if stale_keys:
+            await self.db.execute(
+                delete(AgentTasks).where(
+                    AgentTasks.project_id == project_id,
+                    AgentTasks.request_key == request_key,
+                    AgentTasks.task_key.in_(stale_keys),
+                )
+            )
+
+        await self.db.commit()
+        return await self.list_tasks(project_id=project_id, request_key=request_key)
+
     @staticmethod
     def _serialize_blocked_by(blocked_by: Optional[list[str]]) -> str:
         if blocked_by is None:
@@ -114,6 +176,7 @@ class AgentTaskStore:
             id=task.id,
             project_id=task.project_id,
             request_key=task.request_key,
+            task_key=task.task_key,
             subject=task.subject,
             description=task.description,
             status=task.status,

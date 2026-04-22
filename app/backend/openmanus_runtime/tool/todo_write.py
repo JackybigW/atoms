@@ -27,6 +27,14 @@ class TodoWriteTool(BaseTool):
     parameters: dict = {
         "type": "object",
         "properties": {
+            "request_key": {
+                "type": "string",
+                "description": "Stable request key matching the approved draft plan.",
+            },
+            "source_plan_path": {
+                "type": "string",
+                "description": "Path to the implementation plan file under docs/plans/.",
+            },
             "items": {
                 "type": "array",
                 "description": "Ordered list of todo items.",
@@ -74,11 +82,19 @@ class TodoWriteTool(BaseTool):
         tool._approval_gate = approval_gate
         return tool
 
-    async def execute(self, items: Optional[list] = None, **_kwargs) -> CLIResult:
+    async def execute(
+        self,
+        items: Optional[list] = None,
+        request_key: str = "",
+        source_plan_path: str = "",
+        **_kwargs,
+    ) -> CLIResult:
         if self._approval_gate is not None:
             self._approval_gate.check_todo_write()
         if items is None:
             items = []
+        if len(items) > 8:
+            raise ToolError("At most 8 todo items are allowed")
         in_progress = [i for i in items if i.get("status") == "in_progress"]
         if len(in_progress) > 1:
             raise ToolError("At most one item may be in_progress at a time")
@@ -93,42 +109,31 @@ class TodoWriteTool(BaseTool):
 
         if self._task_store_factory is not None and self._project_id:
             store = self._task_store_factory()
-            existing = await store.list_tasks(
-                project_id=self._project_id,
-                request_key=self._request_key or "todo",
-            )
-            existing_map = {t.subject: t for t in existing}
+            effective_request_key = request_key or self._request_key
+            if not effective_request_key and self._approval_gate is not None:
+                effective_request_key = self._approval_gate.approved_request_key or ""
+            if not effective_request_key:
+                raise ToolError("todo_write requires a request_key")
 
-            summaries = []
-            for item in items:
-                subject = item.get("text", "")
-                status = item.get("status", "pending")
-                if subject in existing_map:
-                    updated = await store.update_task(
-                        task_id=existing_map[subject].id,
-                        status=status,
-                    )
-                    if updated:
-                        summaries.append({
-                            "id": updated.id,
-                            "subject": updated.subject,
-                            "status": updated.status,
-                            "blocked_by": updated.blocked_by,
-                        })
-                else:
-                    created = await store.create_task(
-                        project_id=self._project_id,
-                        request_key=self._request_key or "todo",
-                        subject=subject,
-                        description="",
-                        status=status,
-                    )
-                    summaries.append({
-                        "id": created.id,
-                        "subject": created.subject,
-                        "status": created.status,
-                        "blocked_by": created.blocked_by,
-                    })
+            effective_plan_path = source_plan_path
+            if not effective_plan_path and self._approval_gate is not None:
+                effective_plan_path = self._approval_gate.plan_path or ""
+
+            synced = await store.sync_request_tasks(
+                project_id=self._project_id,
+                request_key=effective_request_key,
+                source_plan_path=effective_plan_path,
+                items=items,
+            )
+            summaries = [
+                {
+                    "id": task.id,
+                    "subject": task.subject,
+                    "status": task.status,
+                    "blocked_by": task.blocked_by,
+                }
+                for task in synced
+            ]
 
             summary_event = {"type": "task_store.summary", "tasks": summaries}
             result = self._event_sink(summary_event)
