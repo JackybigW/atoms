@@ -2,8 +2,7 @@ import logging
 import os
 from pathlib import Path
 
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import get_db
@@ -22,18 +21,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/workspace-runtime", tags=["workspace-runtime"])
 
 _WORKSPACES_ROOT = Path(os.environ.get("ATOMS_WORKSPACES_ROOT", "/tmp/atoms_workspaces"))
-
-HOP_BY_HOP = {
-    "connection",
-    "keep-alive",
-    "proxy-authenticate",
-    "proxy-authorization",
-    "te",
-    "trailers",
-    "transfer-encoding",
-    "upgrade",
-    "content-encoding",
-}
 
 
 async def ensure_runtime_for_project(
@@ -160,47 +147,4 @@ async def ensure_workspace_runtime(
         backend_port=session.backend_port,
         frontend_status=session.frontend_status,
         backend_status=session.backend_status,
-    )
-
-
-@router.api_route(
-    "/projects/{project_id}/preview/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
-)
-async def proxy_preview(
-    project_id: int,
-    path: str,
-    request: Request,
-    current_user: UserResponse = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    sessions_service = WorkspaceRuntimeSessionsService(db)
-    session = await sessions_service.get_by_project(str(current_user.id), project_id)
-    if not session or session.status != "running" or not session.frontend_port:
-        raise HTTPException(status_code=404, detail="Preview runtime not found")
-
-    upstream = f"http://127.0.0.1:{session.frontend_port}/{path}"
-    timeout = httpx.Timeout(30.0, connect=5.0)
-    try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=timeout) as client:
-            upstream_response = await client.request(
-                request.method,
-                upstream,
-                params=request.query_params,
-                content=await request.body(),
-                headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
-            )
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Preview upstream timed out")
-    except httpx.ConnectError:
-        raise HTTPException(status_code=502, detail="Preview upstream not reachable")
-
-    safe_headers = {
-        k: v for k, v in upstream_response.headers.items()
-        if k.lower() not in HOP_BY_HOP
-    }
-    return Response(
-        content=upstream_response.content,
-        status_code=upstream_response.status_code,
-        headers=safe_headers,
     )

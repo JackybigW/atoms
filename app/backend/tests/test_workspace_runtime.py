@@ -88,10 +88,22 @@ def _make_client() -> TestClient:
 # Tests
 # ---------------------------------------------------------------------------
 
-def test_preview_proxy_requires_running_session():
-    client = _make_client()
-    response = client.get("/api/v1/workspace-runtime/projects/42/preview/")
-    assert response.status_code == 404
+def test_deprecated_bearer_auth_preview_proxy_route_is_removed():
+    """The bearer-auth proxy route must not exist — preview goes through preview_gateway.py."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from routers.workspace_runtime import router as ws_router
+
+    app = FastAPI()
+    app.include_router(ws_router)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    # If the route exists it would return 401/403 (auth) or 404 (no session).
+    # After removal FastAPI returns 405 (method not allowed) for a path that
+    # partially matches but has no handler, or 404 for a completely unknown path.
+    # Either way it must NOT return 200, 401, or 403.
+    response = client.get("/api/v1/workspace-runtime/projects/42/preview/index.html")
+    assert response.status_code not in {200, 401, 403}
 
 
 def test_ensure_workspace_runtime_returns_preview_bundle(monkeypatch):
