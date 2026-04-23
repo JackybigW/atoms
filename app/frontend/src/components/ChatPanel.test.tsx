@@ -133,16 +133,16 @@ describe("ChatPanel", () => {
     expect(screen.queryByText("$ pnpm test")).not.toBeInTheDocument();
   });
 
-  it("cancels a run launched during the session bootstrap window when Stop is clicked first", async () => {
-    let resolveFetch!: (value: { ok: boolean; status: number; json: () => Promise<{ ticket: string }> }) => void;
+  it("aborts a bootstrap ticket fetch cleanly when Stop is clicked first", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(
-        () =>
-          new Promise((resolve) => {
-            resolveFetch = resolve;
-          })
-      )
+      vi.fn((_, options?: { signal?: AbortSignal }) => {
+        return new Promise((_, reject) => {
+          options?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted.", "AbortError"));
+          });
+        });
+      })
     );
 
     render(
@@ -164,17 +164,12 @@ describe("ChatPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /stop agent/i }));
 
-    resolveFetch({
-      ok: true,
-      status: 200,
-      json: async () => ({ ticket: "ticket-123" }),
-    });
-
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /send message/i })).toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /stop agent/i })).not.toBeInTheDocument();
       expect(realtimeHarness.sendUserMessage).not.toHaveBeenCalled();
       expect(createAgentRealtimeSessionMock).not.toHaveBeenCalled();
+      expect(screen.queryByText(/the operation was aborted/i)).not.toBeInTheDocument();
     });
   });
 

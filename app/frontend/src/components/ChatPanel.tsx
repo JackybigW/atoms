@@ -109,6 +109,7 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
   const activeAssistantAgentRef = useRef("engineer");
   const ignoreAssistantEventsRef = useRef(false);
   const stopRequestedRef = useRef(false);
+  const bootstrapAbortControllerRef = useRef<AbortController | null>(null);
   const sessionGenerationRef = useRef(0);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -340,6 +341,9 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
     setIsProgressExpanded(false);
     sessionGenerationRef.current += 1;
     const sessionGeneration = sessionGenerationRef.current;
+    const bootstrapAbortController = new AbortController();
+    bootstrapAbortControllerRef.current = bootstrapAbortController;
+    let sessionLaunched = false;
 
     await saveMessage(userMsg);
     const traceId = createTraceId();
@@ -366,11 +370,16 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
           "Content-Type": "application/json",
           ...buildAuthHeaders(),
         },
+        signal: bootstrapAbortController.signal,
         body: JSON.stringify({
           model: selectedModel,
           project_id: projectId,
         }),
       });
+
+      if (stopRequestedRef.current) {
+        return;
+      }
 
       logAgentTrace(traceId, "send:response", {
         ok: response.ok,
@@ -383,10 +392,6 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
 
       const { ticket } = (await response.json()) as { ticket: string };
       if (stopRequestedRef.current) {
-        stopRequestedRef.current = false;
-        setIsStopping(false);
-        setIsLoading(false);
-        setIsStreaming(false);
         return;
       }
       const apiBaseUrl = new URL(getAPIBaseURL());
@@ -402,8 +407,15 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
       });
       sessionRef.current = session;
       session.sendUserMessage({ projectId: Number(projectId), prompt: userMsg.content });
+      sessionLaunched = true;
       logAgentTrace(traceId, "session:sent");
     } catch (err) {
+      if (
+        stopRequestedRef.current ||
+        (err instanceof DOMException && err.name === "AbortError")
+      ) {
+        return;
+      }
       logAgentTrace(traceId, "send:exception", {
         message: err instanceof Error ? err.message : "unknown",
       });
@@ -419,11 +431,22 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
       });
       setIsLoading(false);
       setIsStreaming(false);
+    } finally {
+      if (bootstrapAbortControllerRef.current === bootstrapAbortController) {
+        bootstrapAbortControllerRef.current = null;
+      }
+      stopRequestedRef.current = false;
+      if (!sessionLaunched) {
+        setIsStopping(false);
+        setIsLoading(false);
+        setIsStreaming(false);
+      }
     }
   };
 
   const handleStop = () => {
     stopRequestedRef.current = true;
+    bootstrapAbortControllerRef.current?.abort();
     setIsStopping(true);
     sessionRef.current?.stopRun();
     ignoreAssistantEventsRef.current = true;
