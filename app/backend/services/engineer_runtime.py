@@ -291,18 +291,13 @@ async def run_engineer_session(
             "This plan must expand each approved item into concrete steps with specific file paths, "
             "what to create/modify, and execution order.\n"
             "3. You must call `todo_write` BEFORE implementation to initialize the task system with your full checklist (max 8 items). "
-            "Each item can specify a `blocked_by` array if it depends on other tasks.
-"
+            "Each item can specify a `blocked_by` array if it depends on other tasks.\\n"
             "4. Implement the plan step by step. You MUST continuously call `task_update` to update task statuses "
             "to 'completed' as you finish them, and set the next task to 'in_progress'. "
-            "When a task is marked 'completed', it will automatically unblock dependent tasks.
-"
-            "5. Run verification commands (e.g., pytest, npm test, curl) when done to verify your work.
-"
+            "When a task is marked 'completed', it will automatically unblock dependent tasks.\\n"
+            "5. Run verification commands (e.g., pytest, npm test, curl) when done to verify your work.\\n"
             "6. You MUST ensure ALL tasks are marked as 'completed' via `task_update` BEFORE you finish. Do NOT attempt "
-            "to finish if any task is still pending or in_progress.
-
-"
+            "to finish if any task is still pending or in_progress.\\n\\n"
 
             f"User request:\n{prompt}"
         )
