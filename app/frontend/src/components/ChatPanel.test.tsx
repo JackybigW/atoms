@@ -367,55 +367,87 @@ describe("ChatPanel", () => {
     }
   });
 
-  it("does not commit a late assistant.message_done after Stop is clicked", async () => {
-    render(
-      <WorkspaceProvider>
-        <WorkspaceHarness>
-          <ChatPanel mode="engineer" />
-        </WorkspaceHarness>
-      </WorkspaceProvider>
-    );
+  it.each(["completed", "failed"] as const)(
+    "ignores late assistant events after Stop and clears the temp bubble when session.state=%s arrives",
+    async (status) => {
+      render(
+        <WorkspaceProvider>
+          <WorkspaceHarness>
+            <ChatPanel mode="engineer" />
+          </WorkspaceHarness>
+        </WorkspaceProvider>
+      );
 
-    fireEvent.change(screen.getByPlaceholderText(/Describe what you want to build/i), {
-      target: { value: "build auth" },
-    });
-    const buttons = screen.getAllByRole("button");
-    fireEvent.click(buttons[buttons.length - 1]);
+      fireEvent.change(screen.getByPlaceholderText(/Describe what you want to build/i), {
+        target: { value: "build auth" },
+      });
+      const buttons = screen.getAllByRole("button");
+      fireEvent.click(buttons[buttons.length - 1]);
 
-    await waitFor(() => {
-      expect(realtimeHarness.sendUserMessage).toHaveBeenCalled();
-    });
-
-    vi.useFakeTimers();
-    try {
-      act(() => {
-        realtimeHarness.onEvent?.({ type: "assistant.delta", agent: "swe", content: "Stopped reply should" });
+      await waitFor(() => {
+        expect(realtimeHarness.sendUserMessage).toHaveBeenCalled();
       });
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(24);
-      });
+      vi.useFakeTimers();
+      try {
+        act(() => {
+          realtimeHarness.onEvent?.({ type: "assistant.delta", agent: "swe", content: "Stopped reply should" });
+        });
 
-      fireEvent.click(screen.getAllByRole("button")[screen.getAllByRole("button").length - 1]);
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(24);
+        });
 
-      act(() => {
-        realtimeHarness.onEvent?.({ type: "assistant.delta", agent: "swe", content: " not persist" });
-        realtimeHarness.onEvent?.({ type: "assistant.message_done", agent: "swe" });
-        realtimeHarness.onEvent?.({ type: "run.stopped" });
-      });
+        const stopButton = screen.getByRole("button", { name: /stop agent/i });
+        const visibleParagraph = screen.getByText(
+          (_, element) => element?.tagName === "P" && element.textContent === "Stop"
+        );
+        const renderedBeforeStop = visibleParagraph.textContent;
 
-      await act(async () => {
-        await vi.runAllTimersAsync();
-      });
+        fireEvent.click(stopButton);
 
-      expect(screen.queryByText("Stopped reply should not persist")).not.toBeInTheDocument();
-      expect(
-        messageCreateMock.mock.calls.filter(([payload]) => payload.data.role === "assistant")
-      ).toHaveLength(0);
-    } finally {
-      vi.useRealTimers();
+        act(() => {
+          realtimeHarness.onEvent?.({ type: "assistant.delta", agent: "swe", content: " not persist" });
+          realtimeHarness.onEvent?.({ type: "assistant.message_done", agent: "swe" });
+        });
+
+        await act(async () => {
+          await vi.runAllTimersAsync();
+        });
+
+        expect(
+          screen.getByText(
+            (_, element) => element?.tagName === "P" && element.textContent === "Stop"
+          ).textContent
+        ).toBe(renderedBeforeStop);
+        expect(
+          messageCreateMock.mock.calls.filter(([payload]) => payload.data.role === "assistant")
+        ).toHaveLength(0);
+
+        act(() => {
+          realtimeHarness.onEvent?.({ type: "session.state", status });
+        });
+
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        expect(screen.getByRole("button", { name: /send message/i })).toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: /stop agent/i })).not.toBeInTheDocument();
+
+        expect(
+          screen.queryByText(
+            (_, element) => element?.tagName === "P" && element.textContent === "Stop"
+          )
+        ).not.toBeInTheDocument();
+        expect(
+          messageCreateMock.mock.calls.filter(([payload]) => payload.data.role === "assistant")
+        ).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
     }
-  });
+  );
 
   it("keeps stale session events out of a new run after Stop and immediate resend", async () => {
     render(
@@ -429,7 +461,7 @@ describe("ChatPanel", () => {
     fireEvent.change(screen.getByPlaceholderText(/Describe what you want to build/i), {
       target: { value: "build auth" },
     });
-    let buttons = screen.getAllByRole("button");
+    const buttons = screen.getAllByRole("button");
     fireEvent.click(buttons[buttons.length - 1]);
 
     await waitFor(() => {

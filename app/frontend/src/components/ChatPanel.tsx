@@ -153,7 +153,7 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
     loadMessages();
   }, [projectId, isAuthenticated]);
 
-  const saveMessage = async (msg: Omit<Message, "id">) => {
+  const saveMessage = useCallback(async (msg: Omit<Message, "id">) => {
     if (!projectId) return;
     try {
       await client.entities.messages.create({
@@ -170,7 +170,7 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
     } catch (err) {
       console.error("Failed to save message:", err);
     }
-  };
+  }, [projectId, selectedModel]);
 
   const appendMessage = useCallback((message: Message) => {
     setMessages((prev) => [...prev, message]);
@@ -193,6 +193,13 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
     setActiveAssistantRendered("");
     setActiveAssistantAgent("engineer");
   }, [stopTypingLoop]);
+
+  const settleStreamingState = useCallback(() => {
+    resetActiveAssistantState();
+    setIsLoading(false);
+    setIsStreaming(false);
+    setIsStopping(false);
+  }, [resetActiveAssistantState]);
 
   useEffect(() => {
     if (!isTyping) return;
@@ -292,18 +299,13 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
       }
 
       if (event.type === "run.stopped") {
-        setIsLoading(false);
-        setIsStreaming(false);
-        setIsStopping(false);
-        resetActiveAssistantState();
+        settleStreamingState();
         addTerminalLog("$ engineer run stopped");
         return;
       }
 
       if (event.type === "session.state" && (event.status === "completed" || event.status === "failed")) {
-        setIsLoading(false);
-        setIsStreaming(false);
-        setIsStopping(false);
+        settleStreamingState();
         return;
       }
 
@@ -314,13 +316,10 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
           content: event.error || event.message || "Unknown error",
           created_at: new Date().toISOString(),
         });
-        resetActiveAssistantState();
-        setIsLoading(false);
-        setIsStreaming(false);
-        setIsStopping(false);
+        settleStreamingState();
       }
     },
-    [addTerminalLog, appendMessage, applyRealtimeEvent, resetActiveAssistantState, selectedModel]
+    [addTerminalLog, appendMessage, applyRealtimeEvent, resetActiveAssistantState, saveMessage, selectedModel, settleStreamingState]
   );
 
   const handleSend = async () => {
@@ -722,7 +721,7 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
           
           {isTaskChecklistExpanded && (
             <div className="space-y-1.5 max-h-[25vh] overflow-y-auto pr-2 custom-scrollbar mt-2">
-              {taskSummaries.map((t: any) => (
+              {taskSummaries.map((t: { id?: string; task_key?: string; status?: string; subject?: string }) => (
                 <div key={t.id || t.task_key} className="flex items-start gap-2 text-xs">
                   {t.status === "completed" ? (
                     <CheckCircle2 className="w-3.5 h-3.5 text-[#22C55E] flex-shrink-0 mt-0.5" />
