@@ -179,12 +179,21 @@ describe("ChatPanel", () => {
 
     vi.useFakeTimers();
     try {
-      const assistantText = "Streaming response should not render all at once";
+      const assistantText = "QZ streaming response should not render all at once";
 
       act(() => {
         realtimeHarness.onEvent?.({ type: "assistant.delta", agent: "swe", content: assistantText });
       });
 
+      expect(screen.queryByText(assistantText)).not.toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(24);
+      });
+
+      expect(
+        screen.getByText((_, element) => element?.tagName === "P" && (element.textContent?.startsWith("QZ") ?? false))
+      ).toBeInTheDocument();
       expect(screen.queryByText(assistantText)).not.toBeInTheDocument();
 
       act(() => {
