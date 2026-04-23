@@ -106,6 +106,7 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
   const activeAssistantRenderedRef = useRef("");
   const activeAssistantAgentRef = useRef("engineer");
   const ignoreAssistantEventsRef = useRef(false);
+  const sessionGenerationRef = useRef(0);
   const typingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -327,6 +328,8 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
     setInput("");
     setIsLoading(true);
     setIsStreaming(true);
+    sessionGenerationRef.current += 1;
+    const sessionGeneration = sessionGenerationRef.current;
 
     await saveMessage(userMsg);
     const traceId = createTraceId();
@@ -373,7 +376,12 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
       const wsProtocol = apiBaseUrl.protocol === "https:" ? "wss:" : "ws:";
       const session = createAgentRealtimeSession({
         url: `${wsProtocol}//${apiBaseUrl.host}/api/v1/agent/session/ws?ticket=${ticket}`,
-        onEvent: handleRealtimeEvent,
+        onEvent: (event) => {
+          if (sessionGenerationRef.current !== sessionGeneration) {
+            return;
+          }
+          handleRealtimeEvent(event);
+        },
       });
       sessionRef.current = session;
       session.sendUserMessage({ projectId: Number(projectId), prompt: userMsg.content });

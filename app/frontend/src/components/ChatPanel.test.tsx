@@ -306,9 +306,70 @@ describe("ChatPanel", () => {
         await vi.runAllTimersAsync();
       });
 
+      expect(screen.queryByText("Stopped reply should not persist")).not.toBeInTheDocument();
       expect(
         messageCreateMock.mock.calls.filter(([payload]) => payload.data.role === "assistant")
       ).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps stale session events out of a new run after Stop and immediate resend", async () => {
+    render(
+      <WorkspaceProvider>
+        <WorkspaceHarness>
+          <ChatPanel mode="engineer" />
+        </WorkspaceHarness>
+      </WorkspaceProvider>
+    );
+
+    fireEvent.change(screen.getByPlaceholderText(/Describe what you want to build/i), {
+      target: { value: "build auth" },
+    });
+    let buttons = screen.getAllByRole("button");
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(realtimeHarness.sendUserMessage).toHaveBeenCalledTimes(1);
+    });
+
+    const oldSessionEvent = realtimeHarness.onEvent;
+
+    buttons = screen.getAllByRole("button");
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    fireEvent.change(screen.getByPlaceholderText(/Describe what you want to build/i), {
+      target: { value: "build payments" },
+    });
+    buttons = screen.getAllByRole("button");
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(realtimeHarness.sendUserMessage).toHaveBeenCalledTimes(2);
+    });
+
+    const newSessionEvent = realtimeHarness.onEvent;
+    expect(newSessionEvent).not.toBe(oldSessionEvent);
+
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        oldSessionEvent?.({ type: "assistant.delta", agent: "swe", content: "OLD STALE" });
+        oldSessionEvent?.({ type: "assistant.message_done", agent: "swe" });
+      });
+
+      act(() => {
+        newSessionEvent?.({ type: "assistant.delta", agent: "swe", content: "NEW CLEAN" });
+        newSessionEvent?.({ type: "assistant.message_done", agent: "swe" });
+      });
+
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+
+      expect(screen.getByText("NEW CLEAN")).toBeInTheDocument();
+      expect(screen.queryByText("OLD STALE")).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
