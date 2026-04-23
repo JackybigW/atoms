@@ -250,8 +250,10 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
       }
 
       if (event.type === "assistant.delta") {
+        if (ignoreAssistantEventsRef.current) {
+          return;
+        }
         const nextAgent = event.agent || "engineer";
-        ignoreAssistantEventsRef.current = false;
         activeAssistantAgentRef.current = nextAgent;
         activeAssistantRawRef.current = `${activeAssistantRawRef.current}${event.content}`;
         setActiveAssistantAgent(nextAgent);
@@ -394,6 +396,8 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
 
   const handleStop = () => {
     sessionRef.current?.stopRun();
+    ignoreAssistantEventsRef.current = true;
+    stopTypingLoop();
     setIsLoading(false);
     setIsStreaming(false);
     addTerminalLog("$ engineer stop requested");
@@ -573,9 +577,9 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
                     {activeAssistantRendered}
                   </ReactMarkdown>
-                  {isTyping && (
+                  {isStreaming || isTyping ? (
                     <span className="inline-block w-2 h-4 bg-[#A855F7] animate-pulse ml-0.5" />
-                  )}
+                  ) : null}
                 </div>
               ) : null}
               {progressItems.length > 0 ? (

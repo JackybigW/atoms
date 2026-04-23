@@ -210,6 +210,95 @@ describe("ChatPanel", () => {
     }
   });
 
+  it("stops revealing buffered assistant text immediately when Stop is clicked", async () => {
+    render(
+      <WorkspaceProvider>
+        <WorkspaceHarness>
+          <ChatPanel mode="engineer" />
+        </WorkspaceHarness>
+      </WorkspaceProvider>
+    );
+
+    fireEvent.change(screen.getByPlaceholderText(/Describe what you want to build/i), {
+      target: { value: "build auth" },
+    });
+    const buttons = screen.getAllByRole("button");
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(realtimeHarness.sendUserMessage).toHaveBeenCalled();
+    });
+
+    vi.useFakeTimers();
+    try {
+      const assistantText = "QZ stop should freeze this buffered stream";
+
+      act(() => {
+        realtimeHarness.onEvent?.({ type: "assistant.delta", agent: "swe", content: assistantText });
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(24);
+      });
+
+      const visibleParagraph = screen.getByText(
+        (_, element) => element?.tagName === "P" && (element.textContent?.startsWith("QZ") ?? false)
+      );
+      const renderedBeforeStop = visibleParagraph.textContent;
+
+      const activeButtons = screen.getAllByRole("button");
+      fireEvent.click(activeButtons[activeButtons.length - 1]);
+
+      expect(realtimeHarness.stopRun).toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120);
+      });
+
+      expect(screen.getByText((_, element) => element?.tagName === "P" && (element.textContent?.startsWith("QZ") ?? false)).textContent).toBe(renderedBeforeStop);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the cursor visible while the stream is open even after rendered text catches up", async () => {
+    const { container } = render(
+      <WorkspaceProvider>
+        <WorkspaceHarness>
+          <ChatPanel mode="engineer" />
+        </WorkspaceHarness>
+      </WorkspaceProvider>
+    );
+
+    fireEvent.change(screen.getByPlaceholderText(/Describe what you want to build/i), {
+      target: { value: "build auth" },
+    });
+    const buttons = screen.getAllByRole("button");
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(realtimeHarness.sendUserMessage).toHaveBeenCalled();
+    });
+
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        realtimeHarness.onEvent?.({ type: "assistant.delta", agent: "swe", content: "Short" });
+      });
+
+      for (let i = 0; i < 3; i += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(24);
+        });
+      }
+
+      expect(screen.getByText("Short")).toBeInTheDocument();
+      expect(container.querySelector("span.animate-pulse")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not render a draft plan card for normal assistant messages", async () => {
     render(
       <WorkspaceProvider>
