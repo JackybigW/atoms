@@ -296,7 +296,8 @@ async def run_engineer_session(
             "to 'completed' as you finish them, and set the next task to 'in_progress'. "
             "When a task is marked 'completed', it will automatically unblock dependent tasks.\\n"
             "5. Run verification commands (e.g., pytest, npm test, curl) when done to verify your work.\\n"
-            "6. You MUST ensure ALL tasks are actually implemented. Do NOT blindly mark tasks as completed just to bypass the completion gate. Only mark a task as 'completed' AFTER you have written and verified the code. If the system rejects your attempt to finish, you must go back and actually write the code using file editing tools before calling task_update.\\n\\n"
+            "6. You MUST ensure ALL tasks are marked as 'completed' via `task_update` BEFORE you finish. Do NOT attempt "
+            "to finish if any task is still pending or in_progress.\\n\\n"
 
             f"User request:\n{prompt}"
         )
@@ -346,12 +347,11 @@ async def run_engineer_session(
             if incomplete_tasks:
                 titles = ", ".join([f"'{t.subject}'" for t in incomplete_tasks])
                 pushback_msgs.append(
-                    f"- Tasks NOT completed: {titles}. You MUST actually write the code to implement these features using file tools. "
-                    f"Do NOT just call task_update to bypass this gate. Use task_update ONLY AFTER you have successfully implemented and verified them."
+                    f"- Tasks not completed: {titles}. Mark each completed via task_update."
                 )
             if tasks and not has_verification:
                 pushback_msgs.append(
-                    "- No verification command run. Execute actual verification commands (pytest, npm test, curl, node, python) before finishing."
+                    "- No verification command run. Execute pytest, npm test, curl, or equivalent before finishing."
                 )
 
             current_prompt = (
