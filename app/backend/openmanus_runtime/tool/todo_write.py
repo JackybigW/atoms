@@ -3,6 +3,8 @@ from typing import Any, Optional
 from openmanus_runtime.exceptions import ToolError
 from openmanus_runtime.tool.base import BaseTool, CLIResult
 
+_STATUS_ORDER = {"pending": 0, "in_progress": 1, "completed": 2}
+
 
 def _render_todo_markdown(items: list[dict]) -> str:
     _STATUS_MARKERS = {
@@ -98,6 +100,59 @@ class TodoWriteTool(BaseTool):
         in_progress = [i for i in items if i.get("status") == "in_progress"]
         if len(in_progress) > 1:
             raise ToolError("At most one item may be in_progress at a time")
+
+        # Hard constraint validation: requires current task state from the store
+        if self._task_store_factory is not None and self._project_id:
+            effective_request_key = request_key or self._request_key
+            if not effective_request_key and self._approval_gate is not None:
+                effective_request_key = self._approval_gate.approved_request_key or ""
+            if effective_request_key:
+                store = self._task_store_factory()
+                existing = await store.list_tasks(
+                    project_id=self._project_id,
+                    request_key=effective_request_key,
+                )
+                if existing:
+                    existing_by_key = {task.task_key: task for task in existing}
+                    for item in items:
+                        task_key = str(item.get("id") or "").strip()
+                        new_status = str(item.get("status") or "pending")
+                        existing_task = existing_by_key.get(task_key)
+                        if existing_task is not None:
+                            old_order = _STATUS_ORDER.get(existing_task.status, 0)
+                            new_order = _STATUS_ORDER.get(new_status, 0)
+                            if new_order < old_order:
+                                raise ToolError(
+                                    f"Task '{task_key}' cannot move backward: "
+                                    f"status is forward only "
+                                    f"({existing_task.status} → {new_status} is not allowed)."
+                                )
+                    for item in items:
+                        if item.get("status") != "in_progress":
+                            continue
+                        task_key = str(item.get("id") or "").strip()
+                        blockers = item.get("blocked_by") or []
+                        if not blockers:
+                            existing_task = existing_by_key.get(task_key)
+                            if existing_task is not None:
+                                blockers = existing_task.blocked_by or []
+                        for blocker_key in blockers:
+                            blocker = existing_by_key.get(str(blocker_key))
+                            blocker_status = blocker.status if blocker is not None else "pending"
+                            if blocker_status != "completed":
+                                raise ToolError(
+                                    f"Task '{task_key}' is blocked by task '{blocker_key}' "
+                                    f"which is not yet completed (status: {blocker_status}). "
+                                    f"Complete all blocker tasks before setting this task to in_progress."
+                                )
+
+        # Notify the approval gate before the file write so the gate state is correct
+        if self._approval_gate is not None:
+            has_active = any(i.get("status") == "in_progress" for i in items)
+            if has_active:
+                self._approval_gate.notify_task_active()
+            else:
+                self._approval_gate.notify_no_active_task()
 
         content = _render_todo_markdown(items)
         if self._approval_gate is not None:

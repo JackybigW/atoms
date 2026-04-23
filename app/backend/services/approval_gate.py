@@ -11,6 +11,7 @@ class ApprovalGate:
         self._plan_path: str | None = None
         self._todo_written = False
         self._todo_write_in_progress = False
+        self._has_active_task: bool = False  # NEW
 
     def approve(self, request_key: str | None = None) -> None:
         self._approved = True
@@ -52,6 +53,19 @@ class ApprovalGate:
     def record_todo_written(self) -> None:
         self._todo_written = True
 
+    def notify_task_active(self) -> None:
+        """Called by TodoWriteTool when any task is set to in_progress."""
+        self._has_active_task = True
+
+    def notify_no_active_task(self) -> None:
+        """Called by TodoWriteTool when no task is in_progress."""
+        self._has_active_task = False
+
+    @property
+    def no_active_task(self) -> bool:
+        """True when todos are written but no task is currently in_progress."""
+        return self._todo_written and not self._has_active_task
+
     def check_write(self, path) -> None:
         """Raise ToolError if writes are not yet permitted."""
         normalized = str(path)
@@ -74,6 +88,12 @@ class ApprovalGate:
             raise ToolError(
                 "Implementation writes are blocked until docs/todo.md exists. "
                 "Call todo_write before making implementation changes."
+            )
+        if self.no_active_task and not is_plan_write and not is_todo_write:
+            from openmanus_runtime.exceptions import ToolError
+            raise ToolError(
+                "Implementation writes are blocked: no task is currently in_progress. "
+                "Call todo_write to set the next task to in_progress before making changes."
             )
 
     def check_todo_write(self) -> None:
