@@ -71,7 +71,10 @@ async def proxy_preview_frontend(
     )
     if not session.frontend_port:
         raise HTTPException(status_code=404, detail="Preview frontend not available")
-    upstream = f"http://127.0.0.1:{session.frontend_port}/{path}"
+    upstream_path = f"/preview/{preview_session_key}/frontend/{path}".rstrip("/")
+    if not path:
+        upstream_path = f"/preview/{preview_session_key}/frontend/"
+    upstream = f"http://127.0.0.1:{session.frontend_port}{upstream_path}"
     status_code, headers, content = await _proxy_http_request(upstream, request)
     return Response(content=content, status_code=status_code, headers=headers)
 
@@ -96,18 +99,30 @@ async def proxy_preview_backend(
     return Response(content=content, status_code=status_code, headers=headers)
 
 
-def build_preview_websocket_upstream(session, service: str, path: str) -> str:
+def build_preview_websocket_upstream(
+    session,
+    service: str,
+    path: str,
+    query_string: str = "",
+) -> str:
     port = session.frontend_port if service == "frontend" else session.backend_port
-    return f"ws://127.0.0.1:{port}/{path}"
+    normalized_path = f"/{path}" if path else "/"
+    suffix = f"?{query_string}" if query_string else ""
+    return f"ws://127.0.0.1:{port}{normalized_path}{suffix}"
 
 
-@router.websocket("/preview/{preview_session_key}/{service}/ws/{path:path}")
-async def proxy_preview_websocket(
+def _parse_websocket_subprotocols(header_value: str | None) -> list[str]:
+    if not header_value:
+        return []
+    return [part.strip() for part in header_value.split(",") if part.strip()]
+
+
+async def _proxy_preview_websocket_common(
     websocket: WebSocket,
     preview_session_key: str,
     service: str,
     path: str,
-    db: AsyncSession = Depends(get_db),
+    db: AsyncSession,
 ):
     session = _validate_preview_session(
         await WorkspaceRuntimeSessionsService(db).get_by_preview_session_key(preview_session_key)
@@ -115,10 +130,17 @@ async def proxy_preview_websocket(
     if service not in {"frontend", "backend"}:
         await websocket.close(code=1011, reason="Invalid preview service")
         return
-    upstream_url = build_preview_websocket_upstream(session, service, path)
-    await websocket.accept()
+    upstream_url = build_preview_websocket_upstream(session, service, path, websocket.url.query)
+    requested_subprotocols = _parse_websocket_subprotocols(
+        websocket.headers.get("sec-websocket-protocol")
+    )
+    accepted_subprotocol = requested_subprotocols[0] if requested_subprotocols else None
+    await websocket.accept(subprotocol=accepted_subprotocol)
     try:
-        async with websockets.connect(upstream_url) as upstream:
+        connect_kwargs = {}
+        if requested_subprotocols:
+            connect_kwargs["subprotocols"] = requested_subprotocols
+        async with websockets.connect(upstream_url, **connect_kwargs) as upstream:
             async def client_to_upstream():
                 while True:
                     message = await websocket.receive()
@@ -140,3 +162,24 @@ async def proxy_preview_websocket(
                 pass
     except (OSError, websockets.exceptions.WebSocketException):
         await websocket.close(code=1011, reason="Preview upstream unavailable")
+
+
+@router.websocket("/preview/{preview_session_key}/{service}/ws/{path:path}")
+async def proxy_preview_websocket(
+    websocket: WebSocket,
+    preview_session_key: str,
+    service: str,
+    path: str,
+    db: AsyncSession = Depends(get_db),
+):
+    await _proxy_preview_websocket_common(websocket, preview_session_key, service, path, db)
+
+
+@router.websocket("/preview/{preview_session_key}/{service}/")
+async def proxy_preview_websocket_root(
+    websocket: WebSocket,
+    preview_session_key: str,
+    service: str,
+    db: AsyncSession = Depends(get_db),
+):
+    await _proxy_preview_websocket_common(websocket, preview_session_key, service, "", db)

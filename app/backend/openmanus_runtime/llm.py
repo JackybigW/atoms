@@ -5,15 +5,18 @@ from typing import Dict, List, Optional, Union
 import tiktoken
 from openai import (
     APIError,
+    APIStatusError,
     AsyncAzureOpenAI,
     AsyncOpenAI,
     AuthenticationError,
+    BadRequestError,
     OpenAIError,
     RateLimitError,
 )
 from openai.types.chat import ChatCompletion
 from tenacity import (
     retry,
+    retry_if_exception,
     retry_if_exception_type,
     stop_after_attempt,
     wait_random_exponential,
@@ -44,6 +47,24 @@ MULTIMODAL_MODELS = [
 ]
 
 THINKING_BLOCK_RE = re.compile(r"^\s*<think>\s*(.*?)\s*</think>\s*(.*)$", re.DOTALL)
+
+
+def _is_retryable_openai_error(error: OpenAIError) -> bool:
+    if isinstance(error, BadRequestError):
+        return False
+    if isinstance(error, APIStatusError):
+        status_code = getattr(error, "status_code", None)
+        if status_code is not None and 400 <= status_code < 500 and status_code not in {408, 409, 429}:
+            return False
+    return True
+
+
+def _should_retry_tool_exception(error: BaseException) -> bool:
+    if isinstance(error, TokenLimitExceeded):
+        return False
+    if isinstance(error, OpenAIError):
+        return _is_retryable_openai_error(error)
+    return isinstance(error, (Exception, ValueError))
 
 
 def split_thinking_content(text: Optional[str]) -> tuple[Optional[str], str]:
@@ -660,9 +681,7 @@ class LLM:
     @retry(
         wait=wait_random_exponential(min=1, max=60),
         stop=stop_after_attempt(6),
-        retry=retry_if_exception_type(
-            (OpenAIError, Exception, ValueError)
-        ),  # Don't retry TokenLimitExceeded
+        retry=retry_if_exception(_should_retry_tool_exception),
     )
     async def ask_tool(
         self,

@@ -2,7 +2,6 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from services.engineer_runtime import run_engineer_session
 from services.agent_bootstrap import BootstrapContext
-import json
 
 class FakeResult:
     def scalars(self): return self
@@ -40,9 +39,11 @@ class FakeAgent:
     name = "engineer"
     def __init__(self):
         self.run_calls = 0
+        self.prompts = []
 
     async def run(self, prompt):
         self.run_calls += 1
+        self.prompts.append(prompt)
         return "fake_result"
 
 class FakeTask:
@@ -134,3 +135,104 @@ async def test_engineer_runtime_pushback_on_incomplete_tasks(monkeypatch, tmp_pa
     assert len(system_messages) > 0
     assert "CRITICAL ERROR" in system_messages[0]["content"]
     assert "Task 1" in system_messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_engineer_runtime_uses_fresh_agent_instance_for_pushback_rounds(monkeypatch):
+    events = []
+
+    async def fake_event_sink(event):
+        events.append(event)
+
+    monkeypatch.setattr(
+        "services.agent_bootstrap.classify_user_request_async",
+        AsyncMock(
+            return_value=BootstrapContext(
+                mode="implementation",
+                requires_backend_readme=False,
+                requires_draft_plan=True,
+            )
+        ),
+    )
+
+    fake_files_service = MagicMock()
+    fake_files_service.get_list = AsyncMock(return_value={"items": []})
+    monkeypatch.setattr("services.project_files.Project_filesService", lambda db: fake_files_service)
+
+    fake_messages_service = MagicMock()
+    fake_messages_service.get_list = AsyncMock(return_value={"items": []})
+    monkeypatch.setattr("services.messages.MessagesService", lambda db: fake_messages_service)
+
+    fake_sessions_service = MagicMock()
+    fake_sessions_service.get_by_project = AsyncMock(return_value=None)
+
+    fake_session_record = MagicMock()
+    fake_session_record.preview_session_key = "123"
+    fake_session_record.preview_expires_at = None
+    fake_session_record.frontend_status = "running"
+    fake_session_record.backend_status = "running"
+    fake_sessions_service.create = AsyncMock(return_value=fake_session_record)
+
+    fake_task_store = MagicMock()
+    fake_task_store.list_tasks = AsyncMock(
+        side_effect=[
+            [FakeTask("Task 1", "pending")],
+            [FakeTask("Task 1", "completed")],
+        ]
+    )
+    monkeypatch.setattr("services.agent_task_store.AgentTaskStore", lambda db: fake_task_store)
+
+    class FakeGate:
+        approved_request_key = "req_123"
+
+        def check_write(self, path):
+            pass
+
+        def check_todo_write(self):
+            pass
+
+    monkeypatch.setattr("services.approval_gate.ApprovalGate", lambda *args, **kwargs: FakeGate())
+
+    class FakeBashSession:
+        def has_verification_run(self):
+            return True
+
+    monkeypatch.setattr("services.engineer_runtime.ContainerBashSession", lambda *args, **kwargs: FakeBashSession())
+
+    class FreshAgent(FakeAgent):
+        pass
+
+    class FakeAgentCls:
+        instances = []
+
+        @staticmethod
+        def build_for_workspace(*args, **kwargs):
+            agent = FreshAgent()
+            FakeAgentCls.instances.append(agent)
+            return agent
+
+    def fake_preview_url_builder(key):
+        return {"preview_frontend_url": "http://front", "preview_backend_url": "http://back"}
+
+    await run_engineer_session(
+        db=FakeDB(),
+        user_id="user-1",
+        project_id=42,
+        prompt="build something",
+        model="fake-model",
+        event_sink=fake_event_sink,
+        workspace_service_factory=lambda: FakeWorkspaceService(),
+        sandbox_service_factory=lambda: FakeSandboxService(),
+        agent_cls=FakeAgentCls,
+        llm_builder=lambda model: None,
+        workspace_runtime_sessions_service_cls=lambda db: fake_sessions_service,
+        preview_session_fields_factory=lambda: {"preview_session_key": "123"},
+        preview_url_builder=fake_preview_url_builder,
+        preview_contract_loader=lambda p: None,
+    )
+
+    assert len(FakeAgentCls.instances) == 2
+    assert FakeAgentCls.instances[0].run_calls == 1
+    assert FakeAgentCls.instances[1].run_calls == 1
+    assert "build something" in FakeAgentCls.instances[0].prompts[0]
+    assert "CRITICAL ERROR" in FakeAgentCls.instances[1].prompts[0]

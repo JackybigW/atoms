@@ -84,6 +84,21 @@ install_node_deps_if_needed() {
   fi
 }
 
+is_standard_pnpm_dev_command() {
+  local command="$1"
+  local trimmed="${command#"${command%%[![:space:]]*}"}"
+
+  if [[ "${trimmed}" == "pnpm run dev -- --host 0.0.0.0 --port 3000" ]] || [[ "${trimmed}" == "pnpm run dev"* ]]; then
+    return 0
+  fi
+
+  if [[ "${trimmed}" == cd*"&& pnpm run dev"* ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
 if [[ ! -f "${CONTRACT_PATH}" ]]; then
   exec /usr/local/bin/start-dev
 fi
@@ -129,7 +144,7 @@ FRONTEND_ROOT="$(resolve_frontend_root "${WORKSPACE_ROOT}")"
 
 install_node_deps_if_needed
 
-if [[ "${FRONTEND_COMMAND}" == "pnpm run dev -- --host 0.0.0.0 --port 3000" ]] || [[ "${FRONTEND_COMMAND}" == "pnpm run dev"* ]]; then
+if is_standard_pnpm_dev_command "${FRONTEND_COMMAND}"; then
   /usr/local/bin/start-dev >"${FRONTEND_LOG}" 2>&1
 else
   kill_listeners_on_port 3000

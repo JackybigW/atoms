@@ -691,6 +691,8 @@ def test_agent_prompt_includes_preview_manifest_contract(monkeypatch):
     assert response.status_code == 200
     assert ".atoms/preview.json" in captured_prompt["value"]
     assert "VITE_ATOMS_PREVIEW_BACKEND_BASE" in captured_prompt["value"]
+    assert "BrowserRouter" in captured_prompt["value"]
+    assert "basename" in captured_prompt["value"]
     assert "/usr/local/bin/start-preview" in captured_prompt["value"]
 
 

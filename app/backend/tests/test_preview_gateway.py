@@ -3,7 +3,11 @@ from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from routers.preview_gateway import router, build_preview_websocket_upstream
+from routers.preview_gateway import (
+    router,
+    _parse_websocket_subprotocols,
+    build_preview_websocket_upstream,
+)
 
 
 class _FakeSession:
@@ -51,7 +55,7 @@ def test_frontend_preview_gateway_uses_frontend_port(monkeypatch):
     client = _make_client(monkeypatch)
     response = client.get("/preview/preview-session-123/frontend/src/main.tsx")
     assert response.status_code == 200
-    assert response.text == "ok:http://127.0.0.1:3100/src/main.tsx"
+    assert response.text == "ok:http://127.0.0.1:3100/preview/preview-session-123/frontend/src/main.tsx"
 
 
 def test_backend_preview_gateway_uses_backend_port(monkeypatch):
@@ -77,3 +81,10 @@ def test_build_preview_websocket_upstream_uses_service_port():
     session = _FakeSession()
     assert build_preview_websocket_upstream(session, "frontend", "hmr") == "ws://127.0.0.1:3100/hmr"
     assert build_preview_websocket_upstream(session, "backend", "ws/events") == "ws://127.0.0.1:8100/ws/events"
+    assert build_preview_websocket_upstream(session, "frontend", "", "token=abc") == "ws://127.0.0.1:3100/?token=abc"
+
+
+def test_parse_websocket_subprotocols_splits_header_values():
+    assert _parse_websocket_subprotocols(None) == []
+    assert _parse_websocket_subprotocols("vite-hmr") == ["vite-hmr"]
+    assert _parse_websocket_subprotocols("vite-hmr, other-proto") == ["vite-hmr", "other-proto"]
