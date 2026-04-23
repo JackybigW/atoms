@@ -15,11 +15,17 @@ class Terminate(BaseTool):
                 "type": "string",
                 "description": "The finish status of the interaction.",
                 "enum": ["success", "failure"],
+            },
+            "summary": {
+                "type": "string",
+                "description": "A final summary of the work completed, to be shown to the user.",
             }
         },
         "required": ["status"],
     }
 
-    async def execute(self, status: str) -> str:
+    async def execute(self, status: str, summary: str = "") -> str:
         """Finish the current execution"""
+        if summary:
+            return f"The interaction has been completed with status: {status}\nSummary: {summary}"
         return f"The interaction has been completed with status: {status}"

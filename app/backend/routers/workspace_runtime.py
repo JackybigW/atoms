@@ -57,13 +57,16 @@ async def ensure_runtime_for_project(
     record and return it.
     """
     sessions_service = WorkspaceRuntimeSessionsService(db)
+    workspace_service = ProjectWorkspaceService(base_root=_WORKSPACES_ROOT)
+    paths = workspace_service.resolve_paths(user_id=user_id, project_id=project_id)
+
     existing = await sessions_service.get_by_project(user_id, project_id)
     if (
         existing
         and existing.status == "running"
         and can_reuse_preview_session(existing.preview_session_key, existing.preview_expires_at)
     ):
-        # Verify the Vite dev server is actually alive (it can die inside the container)
+        # Verify the Vite dev server is actually alive
         if existing.frontend_port:
             sandbox_service_check = SandboxRuntimeService(project_root=_WORKSPACES_ROOT)
             container_name_check = existing.container_name
@@ -71,20 +74,29 @@ async def ensure_runtime_for_project(
                 frontend_alive = await sandbox_service_check.wait_for_service(
                     container_name_check, 3000, timeout_seconds=3
                 )
-                if frontend_alive:
+                
+                # Verify backend if configured
+                contract = load_preview_contract(paths.host_root)
+                backend_alive = True
+                if contract and contract.backend:
+                    if not existing.backend_port:
+                        backend_alive = False
+                    else:
+                        backend_alive = await sandbox_service_check.wait_for_service(
+                            container_name_check, 8000, path=contract.backend.healthcheck_path, timeout_seconds=3
+                        )
+
+                if frontend_alive and backend_alive:
                     return existing
                 else:
                     logger.warning(
-                        "[ensure_runtime] cached session found but frontend port %s is dead, forcing restart",
-                        existing.frontend_port,
+                        "[ensure_runtime] cached session found but services dead (frontend=%s, backend=%s), forcing restart",
+                        frontend_alive, backend_alive
                     )
             else:
                 return existing
         else:
             return existing
-
-    workspace_service = ProjectWorkspaceService(base_root=_WORKSPACES_ROOT)
-    paths = workspace_service.resolve_paths(user_id=user_id, project_id=project_id)
 
     # Generate preview session key upfront so Vite --base path is correct.
     preview_fields = new_preview_session_fields()
