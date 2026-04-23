@@ -232,18 +232,17 @@ async def run_engineer_session(
             return agent
 
         readme_block = ""
-        if bootstrap_ctx.requires_backend_readme:
-            readme_path = paths.host_root / "app" / "backend" / "README.md"
-            try:
-                readme_content = readme_path.read_text(encoding="utf-8").strip()
-                if readme_content:
-                    readme_block = (
-                        "## Backend README (mandatory reading before implementing backend features)\n\n"
-                        f"{readme_content}\n\n---\n\n"
-                    )
-                    await log_step(f"injected backend README chars={len(readme_content)}")
-            except OSError:
-                logger.debug("%s backend README not found at %s", prefix, readme_path)
+        readme_path = paths.host_root / "app" / "backend" / "README.md"
+        try:
+            readme_content = readme_path.read_text(encoding="utf-8").strip()
+            if readme_content:
+                readme_block = (
+                    "## Backend README (mandatory reading before implementing backend features)\n\n"
+                    f"{readme_content}\n\n---\n\n"
+                )
+                await log_step(f"injected backend README chars={len(readme_content)}")
+        except OSError:
+            logger.debug("%s backend README not found at %s", prefix, readme_path)
 
         task_prompt = readme_block + (
             f"You must work inside this workspace root: /workspace\n"
