@@ -69,6 +69,14 @@ function WorkspaceHarness({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+async function advanceTypewriter(ticks = 24, steps = 24) {
+  for (let i = 0; i < steps; i += 1) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ticks);
+    });
+  }
+}
+
 describe("ChatPanel", () => {
   afterEach(() => {
     cleanup();
@@ -229,7 +237,7 @@ describe("ChatPanel", () => {
     expect(realtimeHarness.sendUserMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("renders a draft plan card with an approve button when draft_plan.pending arrives", async () => {
+  it("renders the draft plan card incrementally and only shows Approve after ready", async () => {
     render(
       <WorkspaceProvider>
         <WorkspaceHarness>
@@ -250,18 +258,89 @@ describe("ChatPanel", () => {
 
     act(() => {
       realtimeHarness.onEvent?.({
-        type: "draft_plan.pending",
+        type: "draft_plan.start",
         request_key: "req-1",
-        items: [
-          { id: "1", text: "Create homepage" },
-          { id: "2", text: "Add billing page" },
-        ],
       });
     });
 
-    expect(await screen.findByText("Create homepage")).toBeInTheDocument();
+    expect(screen.getByText("Draft Plan")).toBeInTheDocument();
+    expect(screen.queryByRole("list")).not.toBeInTheDocument();
+    expect(screen.queryByText("Create homepage")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
+
+    act(() => {
+      realtimeHarness.onEvent?.({
+        type: "draft_plan.item",
+        request_key: "req-1",
+        item: { id: "1", text: "Create homepage" },
+      });
+    });
+
+    expect(screen.getByText("Create homepage")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
+
+    act(() => {
+      realtimeHarness.onEvent?.({
+        type: "draft_plan.item",
+        request_key: "req-1",
+        item: { id: "2", text: "Add billing page" },
+      });
+    });
+
     expect(screen.getByText("Add billing page")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
+
+    act(() => {
+      realtimeHarness.onEvent?.({
+        type: "draft_plan.ready",
+        request_key: "req-1",
+      });
+    });
+
     expect(screen.getByRole("button", { name: /approve/i })).toBeInTheDocument();
+  });
+
+  it("clears the pending draft plan card when draft_plan.approved arrives", async () => {
+    render(
+      <WorkspaceProvider>
+        <WorkspaceHarness>
+          <ChatPanel mode="engineer" />
+        </WorkspaceHarness>
+      </WorkspaceProvider>
+    );
+
+    fireEvent.change(screen.getByPlaceholderText(/Describe what you want to build/i), {
+      target: { value: "build auth" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /send message/i }));
+
+    await waitFor(() => {
+      expect(realtimeHarness.sendUserMessage).toHaveBeenCalled();
+    });
+
+    act(() => {
+      realtimeHarness.onEvent?.({ type: "draft_plan.start", request_key: "req-1" });
+      realtimeHarness.onEvent?.({
+        type: "draft_plan.item",
+        request_key: "req-1",
+        item: { id: "1", text: "Create homepage" },
+      });
+      realtimeHarness.onEvent?.({ type: "draft_plan.ready", request_key: "req-1" });
+    });
+
+    expect(screen.getByText("Draft Plan")).toBeInTheDocument();
+    expect(screen.getByText("Create homepage")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /approve/i })).toBeInTheDocument();
+
+    act(() => {
+      realtimeHarness.onEvent?.({ type: "draft_plan.approved", request_key: "req-1" });
+    });
+
+    expect(screen.queryByText("Draft Plan")).not.toBeInTheDocument();
+    expect(screen.queryByText("Create homepage")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
   });
 
   it("buffers assistant delta text until message_done flushes the remainder", async () => {
@@ -306,11 +385,73 @@ describe("ChatPanel", () => {
         realtimeHarness.onEvent?.({ type: "assistant.message_done", agent: "swe" });
       });
 
-      await act(async () => {
-        await vi.runAllTimersAsync();
+      await advanceTypewriter();
+
+      expect(
+        screen.getByText(
+          (_, element) => element?.tagName === "P" && element.textContent === assistantText
+        )
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps typewriter rendering active after message_done until the visible text catches up", async () => {
+    render(
+      <WorkspaceProvider>
+        <WorkspaceHarness>
+          <ChatPanel mode="engineer" />
+        </WorkspaceHarness>
+      </WorkspaceProvider>
+    );
+
+    fireEvent.change(screen.getByPlaceholderText(/Describe what you want to build/i), {
+      target: { value: "build auth" },
+    });
+    const buttons = screen.getAllByRole("button");
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(realtimeHarness.sendUserMessage).toHaveBeenCalled();
+    });
+
+    vi.useFakeTimers();
+    try {
+      const replyText = "Message done should not instantly dump the whole answer";
+
+      act(() => {
+        realtimeHarness.onEvent?.({ type: "assistant.delta", agent: "swe", content: replyText });
       });
 
-      expect(screen.getByText(assistantText)).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(24);
+      });
+
+      const partialBubble = screen.getByText(
+        (_, element) => element?.tagName === "P" && (element.textContent?.startsWith("Message") ?? false)
+      );
+      const renderedBeforeDone = partialBubble.textContent;
+
+      act(() => {
+        realtimeHarness.onEvent?.({ type: "assistant.message_done", agent: "swe" });
+      });
+
+      expect(
+        screen.getByText(
+          (_, element) => element?.tagName === "P" && (element.textContent?.startsWith("Message") ?? false)
+        ).textContent
+      ).toBe(renderedBeforeDone);
+      expect(screen.getByRole("button", { name: /stop agent/i })).toBeInTheDocument();
+      expect(screen.queryByText(replyText)).not.toBeInTheDocument();
+
+      await advanceTypewriter();
+
+      expect(
+        screen.getByText(
+          (_, element) => element?.tagName === "P" && element.textContent === replyText
+        )
+      ).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
@@ -500,11 +641,13 @@ describe("ChatPanel", () => {
         realtimeHarness.onEvent?.({ type: "assistant.message_done", agent: "swe" });
       });
 
-      await act(async () => {
-        await vi.runAllTimersAsync();
-      });
+      await advanceTypewriter();
 
-      expect(screen.getByText(replyText)).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          (_, element) => element?.tagName === "P" && element.textContent === replyText
+        )
+      ).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /send message/i })).toBeInTheDocument();
       expect(messageCreateMock.mock.calls.filter(([payload]) => payload.data.role === "assistant")).toHaveLength(1);
     } finally {
@@ -563,11 +706,13 @@ describe("ChatPanel", () => {
         newSessionEvent?.({ type: "assistant.message_done", agent: "swe" });
       });
 
-      await act(async () => {
-        await vi.runAllTimersAsync();
-      });
+      await advanceTypewriter();
 
-      expect(screen.getByText("NEW CLEAN")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          (_, element) => element?.tagName === "P" && element.textContent === "NEW CLEAN"
+        )
+      ).toBeInTheDocument();
       expect(screen.queryByText("OLD STALE")).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();

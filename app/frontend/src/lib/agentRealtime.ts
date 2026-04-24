@@ -18,7 +18,9 @@ export type AgentRealtimeEvent =
   | { type: "workspace_sync"; changed_files?: string[] }
   | { type: "run.stopped" }
   | { type: "error"; error?: string; message?: string }
-  | { type: "draft_plan.pending"; request_key: string; items: Array<{ id: string; text: string }> }
+  | { type: "draft_plan.start"; request_key: string }
+  | { type: "draft_plan.item"; request_key: string; item: { id: string; text: string } }
+  | { type: "draft_plan.ready"; request_key: string }
   | { type: "draft_plan.approved"; request_key: string }
   | { type: "task_store.summary"; tasks: Array<{ id: number; subject: string; status: string; blocked_by: string[] }> }
   | { type: "todo.updated"; items: Array<{ id: string; text: string; status: string }> };

@@ -88,7 +88,7 @@ function createTraceId(): string {
 
 export default function ChatPanel({ mode }: ChatPanelProps) {
   const { user, isAuthenticated } = useAuth();
-  const { projectId, addTerminalLog, applyRealtimeEvent, progressItems, taskSummaries } = useWorkspace();
+  const { projectId, addTerminalLog, applyRealtimeEvent, progressItems, taskSummaries, sessionStatus } = useWorkspace();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -103,10 +103,13 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
   const [pendingDraftPlan, setPendingDraftPlan] = useState<{
     request_key: string;
     items: Array<{ id: string; text: string }>;
+    isReady: boolean;
   } | null>(null);
   const activeAssistantRawRef = useRef("");
   const activeAssistantRenderedRef = useRef("");
   const activeAssistantAgentRef = useRef("engineer");
+  const assistantMessageDoneRef = useRef(false);
+  const pendingRunTerminalStateRef = useRef<string | null>(null);
   const ignoreAssistantEventsRef = useRef(false);
   const stopRequestedRef = useRef(false);
   const bootstrapAbortControllerRef = useRef<AbortController | null>(null);
@@ -184,9 +187,9 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
     setIsTyping(false);
   }, []);
 
-  const resetActiveAssistantState = useCallback(() => {
+  const clearActiveAssistantState = useCallback(() => {
     stopTypingLoop();
-    ignoreAssistantEventsRef.current = true;
+    assistantMessageDoneRef.current = false;
     activeAssistantRawRef.current = "";
     activeAssistantRenderedRef.current = "";
     activeAssistantAgentRef.current = "engineer";
@@ -194,12 +197,22 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
     setActiveAssistantAgent("engineer");
   }, [stopTypingLoop]);
 
-  const settleStreamingState = useCallback(() => {
-    resetActiveAssistantState();
+  const endRunState = useCallback(() => {
+    ignoreAssistantEventsRef.current = true;
+    pendingRunTerminalStateRef.current = null;
+    clearActiveAssistantState();
     setIsLoading(false);
     setIsStreaming(false);
     setIsStopping(false);
-  }, [resetActiveAssistantState]);
+  }, [clearActiveAssistantState]);
+
+  const finishRunIfPending = useCallback(() => {
+    if (pendingRunTerminalStateRef.current === null) {
+      return;
+    }
+    pendingRunTerminalStateRef.current = null;
+    endRunState();
+  }, [endRunState]);
 
   const commitAssistantReply = useCallback(
     (content: string) => {
@@ -214,9 +227,10 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
       };
       appendMessage(assistantMessage);
       void saveMessage(assistantMessage);
-      settleStreamingState();
+      clearActiveAssistantState();
+      finishRunIfPending();
     },
-    [appendMessage, saveMessage, selectedModel, settleStreamingState]
+    [appendMessage, clearActiveAssistantState, finishRunIfPending, saveMessage, selectedModel]
   );
 
   useEffect(() => {
@@ -236,6 +250,15 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
 
       if (backlog <= 0) {
         setIsTyping(false);
+        if (assistantMessageDoneRef.current) {
+          const content = raw.trim();
+          if (content) {
+            commitAssistantReply(content);
+            return;
+          }
+          clearActiveAssistantState();
+          finishRunIfPending();
+        }
         return;
       }
 
@@ -249,6 +272,15 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
 
       if (nextRendered.length >= raw.length) {
         setIsTyping(false);
+        if (assistantMessageDoneRef.current) {
+          const content = raw.trim();
+          if (content) {
+            commitAssistantReply(content);
+            return;
+          }
+          clearActiveAssistantState();
+          finishRunIfPending();
+        }
       }
     }, TYPEWRITER_TICK_MS);
 
@@ -258,7 +290,7 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
         typingTimerRef.current = null;
       }
     };
-  }, [isTyping, activeAssistantRendered]);
+  }, [activeAssistantRendered, clearActiveAssistantState, commitAssistantReply, finishRunIfPending, isTyping]);
 
   const logAgentTrace = useCallback((traceId: string, stage: string, details?: Record<string, unknown>) => {
     const suffix = details ? ` ${JSON.stringify(details)}` : "";
@@ -270,12 +302,41 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
     (event: AgentRealtimeEvent) => {
       applyRealtimeEvent(event);
 
-      if (event.type === "draft_plan.pending") {
-        setPendingDraftPlan({ request_key: event.request_key, items: event.items });
+      if (event.type === "draft_plan.start") {
+        setPendingDraftPlan({ request_key: event.request_key, items: [], isReady: false });
+        return;
+      }
+      if (event.type === "draft_plan.item") {
+        setPendingDraftPlan((current) => {
+          if (!current || current.request_key !== event.request_key) {
+            return current;
+          }
+          return {
+            ...current,
+            items: [...current.items, event.item],
+          };
+        });
+        return;
+      }
+      if (event.type === "draft_plan.ready") {
+        setPendingDraftPlan((current) => {
+          if (!current || current.request_key !== event.request_key) {
+            return current;
+          }
+          return {
+            ...current,
+            isReady: true,
+          };
+        });
         return;
       }
       if (event.type === "draft_plan.approved") {
-        setPendingDraftPlan(null);
+        setPendingDraftPlan((current) => {
+          if (!current || current.request_key !== event.request_key) {
+            return current;
+          }
+          return null;
+        });
         return;
       }
 
@@ -295,26 +356,41 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
         if (ignoreAssistantEventsRef.current) {
           return;
         }
-        const content = activeAssistantRawRef.current.trim();
-        if (content) {
-          commitAssistantReply(content);
+        assistantMessageDoneRef.current = true;
+        const raw = activeAssistantRawRef.current;
+        const content = raw.trim();
+        if (!content) {
+          clearActiveAssistantState();
+          finishRunIfPending();
           return;
         }
-        settleStreamingState();
+        if (activeAssistantRenderedRef.current.length >= raw.length && !isTyping) {
+          commitAssistantReply(content);
+        }
         return;
       }
 
       if (event.type === "run.stopped") {
-        settleStreamingState();
+        endRunState();
         addTerminalLog("$ engineer run stopped");
         return;
       }
 
       if (event.type === "session.state" && (event.status === "completed" || event.status === "failed")) {
-        if (!stopRequestedRef.current) {
+        if (stopRequestedRef.current) {
+          endRunState();
           return;
         }
-        settleStreamingState();
+        pendingRunTerminalStateRef.current = event.status;
+        const raw = activeAssistantRawRef.current;
+        const content = raw.trim();
+        if (!content) {
+          finishRunIfPending();
+          return;
+        }
+        if (assistantMessageDoneRef.current && activeAssistantRenderedRef.current.length >= raw.length && !isTyping) {
+          commitAssistantReply(content);
+        }
         return;
       }
 
@@ -325,14 +401,23 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
           content: event.error || event.message || "Unknown error",
           created_at: new Date().toISOString(),
         });
-        settleStreamingState();
+        endRunState();
       }
     },
-    [addTerminalLog, appendMessage, applyRealtimeEvent, commitAssistantReply, settleStreamingState]
+    [
+      addTerminalLog,
+      appendMessage,
+      applyRealtimeEvent,
+      clearActiveAssistantState,
+      commitAssistantReply,
+      endRunState,
+      finishRunIfPending,
+      isTyping,
+    ]
   );
 
   const handleSend = async () => {
-    if (!input.trim() || isLoading || isStopping) return;
+    if (!input.trim() || isLoading || isStopping || sessionStatus === "running") return;
     stopRequestedRef.current = false;
 
     const userMsg: Message = {
@@ -362,6 +447,8 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
       ignoreAssistantEventsRef.current = false;
       stopTypingLoop();
       activeAssistantAgentRef.current = "engineer";
+      assistantMessageDoneRef.current = false;
+      pendingRunTerminalStateRef.current = null;
       activeAssistantRawRef.current = "";
       activeAssistantRenderedRef.current = "";
       setActiveAssistantAgent("engineer");
@@ -429,12 +516,12 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
       });
       console.error("Chat error:", err);
       appendMessage({
-        role: "assistant",
-        agent: "swe",
-        content:
-          err instanceof Error
-            ? err.message
-            : "Sorry, I encountered an error. Please try again.",
+          role: "assistant",
+          agent: "swe",
+          content:
+            err instanceof Error
+              ? err.message
+              : "Sorry, I encountered an error. Please try again.",
         created_at: new Date().toISOString(),
       });
       setIsLoading(false);
@@ -460,7 +547,6 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
     ignoreAssistantEventsRef.current = true;
     stopTypingLoop();
     setIsLoading(false);
-    setIsStreaming(false);
     addTerminalLog("$ engineer stop requested");
   };
 
@@ -475,12 +561,14 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (isLoading || isStopping) {
+      if (isLoading || isStopping || sessionStatus === "running") {
         return;
       }
       handleSend();
     }
   };
+
+  const isRunActive = isLoading || isStopping || sessionStatus === "running";
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -689,24 +777,27 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
               <div className="text-[10px] font-semibold uppercase tracking-wider mb-2 text-[#A855F7]">
                 Draft Plan
               </div>
-              <ul className="space-y-1 mb-3">
-                {pendingDraftPlan.items.map((item) => (
-                  <li key={item.id} className="text-sm text-[#E4E4E7] flex gap-2">
-                    <span className="text-[#71717A]">{item.id}.</span>
-                    <span>{item.text}</span>
-                  </li>
-                ))}
-              </ul>
-              <Button
-                size="sm"
-                className="bg-[#7C3AED] hover:bg-[#6D28D9] text-white h-7 px-3 text-xs"
-                onClick={() => {
-                  sessionRef.current?.approveDraftPlan({ requestKey: pendingDraftPlan.request_key });
-                  setPendingDraftPlan(null);
-                }}
-              >
-                Approve
-              </Button>
+              {pendingDraftPlan.items.length > 0 ? (
+                <ul className={pendingDraftPlan.isReady ? "space-y-1 mb-3" : "space-y-1"}>
+                  {pendingDraftPlan.items.map((item) => (
+                    <li key={item.id} className="text-sm text-[#E4E4E7] flex gap-2">
+                      <span className="text-[#71717A]">{item.id}.</span>
+                      <span>{item.text}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {pendingDraftPlan.isReady ? (
+                <Button
+                  size="sm"
+                  className="bg-[#7C3AED] hover:bg-[#6D28D9] text-white h-7 px-3 text-xs transition-opacity duration-200 animate-in fade-in-0"
+                  onClick={() => {
+                    sessionRef.current?.approveDraftPlan({ requestKey: pendingDraftPlan.request_key });
+                  }}
+                >
+                  Approve
+                </Button>
+              ) : null}
             </div>
           </div>
         )}
@@ -764,11 +855,11 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
                 ? "Describe what you want to build..."
                 : "Create a project first to start chatting"
             }
-            disabled={!projectId || isLoading}
+            disabled={!projectId || isRunActive}
             className="flex-1 bg-transparent text-sm text-white placeholder:text-[#52525B] resize-none outline-none min-h-[24px] max-h-[200px]"
             rows={1}
           />
-          {isStreaming || isStopping ? (
+          {isRunActive ? (
             <Button
               size="sm"
               variant="ghost"
@@ -782,7 +873,7 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
             <Button
               size="sm"
               onClick={handleSend}
-              disabled={!input.trim() || isLoading || !projectId}
+              disabled={!input.trim() || isRunActive || !projectId}
               aria-label="Send message"
               className="bg-[#7C3AED] hover:bg-[#6D28D9] text-white p-1 mb-0.5 h-7 w-7"
             >
