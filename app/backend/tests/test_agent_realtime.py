@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import time
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -422,5 +423,137 @@ def test_websocket_run_stop_emits_run_stopped(monkeypatch, tmp_path):
             websocket.send_json({"type": "run.stop"})
             stopped = websocket.receive_json()
             assert stopped == {"type": "run.stopped"}
+
+    asyncio.run(engine.dispose())
+
+
+def test_websocket_run_stop_cancels_inflight_session_task(monkeypatch, tmp_path):
+    app, engine, _, _ = _build_environment(tmp_path, monkeypatch)
+
+    cancellations = []
+
+    async def fake_long_running_engineer_session(*, stop_event=None, **kwargs):
+        assert stop_event is not None
+        try:
+            await stop_event.wait()
+            await asyncio.sleep(0.2)
+            return False
+        except asyncio.CancelledError:
+            cancellations.append(True)
+            raise
+
+    monkeypatch.setattr(
+        "routers.agent_realtime.run_engineer_session",
+        fake_long_running_engineer_session,
+        raising=False,
+    )
+
+    with TestClient(app) as client:
+        ticket = client.post("/api/v1/agent/session-ticket", json={"project_id": 42, "model": "gpt-4.1"}).json()[
+            "ticket"
+        ]
+
+        with client.websocket_connect(f"/api/v1/agent/session/ws?ticket={ticket}") as websocket:
+            websocket.receive_json()
+            websocket.send_json({"type": "user.message", "project_id": 42, "prompt": "build auth"})
+            websocket.receive_json()
+
+            websocket.send_json({"type": "run.stop"})
+            stopped = websocket.receive_json()
+            assert stopped == {"type": "run.stopped"}
+
+            deadline = time.time() + 0.3
+            while not cancellations and time.time() < deadline:
+                time.sleep(0.01)
+
+            assert cancellations == [True]
+
+    asyncio.run(engine.dispose())
+
+
+def test_websocket_run_stop_allows_new_prompt_while_draft_plan_waits_for_approval(monkeypatch, tmp_path):
+    app, engine, _, _ = _build_environment(tmp_path, monkeypatch)
+
+    draft_plan_service = AgentDraftPlanService()
+    prompts = []
+
+    async def fake_run_engineer_session(*, event_sink, project_id, prompt, **kwargs):
+        prompts.append(prompt)
+        tool = DraftPlanTool.create(
+            event_sink=event_sink,
+            service=draft_plan_service,
+            project_id=project_id,
+            approval_timeout=5.0,
+        )
+        await tool.execute(
+            request_key=f"req-{len(prompts)}",
+            items=[
+                {"id": "1", "text": "Create homepage"},
+                {"id": "2", "text": "Add billing page"},
+                {"id": "3", "text": "Wire deployment"},
+            ],
+        )
+        await event_sink({"type": "assistant", "agent": "swe", "content": f"started {prompt}"})
+        return True
+
+    monkeypatch.setattr("routers.agent_realtime.run_engineer_session", fake_run_engineer_session, raising=False)
+    monkeypatch.setattr("routers.agent_realtime.get_agent_draft_plan_service", lambda: draft_plan_service)
+
+    with TestClient(app) as client:
+        ticket = client.post("/api/v1/agent/session-ticket", json={"project_id": 42, "model": "gpt-4.1"}).json()[
+            "ticket"
+        ]
+
+        with client.websocket_connect(f"/api/v1/agent/session/ws?ticket={ticket}") as websocket:
+            assert websocket.receive_json() == {
+                "type": "session.state",
+                "status": "idle",
+                "project_id": 42,
+                "assistant_role": "engineer",
+            }
+
+            websocket.send_json({"type": "user.message", "project_id": 42, "prompt": "first prompt"})
+            assert websocket.receive_json() == {
+                "type": "session.state",
+                "status": "running",
+                "project_id": 42,
+                "assistant_role": "engineer",
+            }
+            assert websocket.receive_json() == {
+                "type": "draft_plan.start",
+                "request_key": "req-1",
+            }
+            assert websocket.receive_json()["type"] == "draft_plan.item"
+            assert websocket.receive_json()["type"] == "draft_plan.item"
+            assert websocket.receive_json()["type"] == "draft_plan.item"
+            assert websocket.receive_json() == {
+                "type": "draft_plan.ready",
+                "request_key": "req-1",
+            }
+
+            websocket.send_json({"type": "run.stop"})
+            assert websocket.receive_json() == {"type": "run.stopped"}
+
+            websocket.send_json({"type": "user.message", "project_id": 42, "prompt": "second prompt"})
+
+            assert websocket.receive_json() == {
+                "type": "session.state",
+                "status": "running",
+                "project_id": 42,
+                "assistant_role": "engineer",
+            }
+            assert websocket.receive_json() == {
+                "type": "draft_plan.start",
+                "request_key": "req-2",
+            }
+            assert websocket.receive_json()["type"] == "draft_plan.item"
+            assert websocket.receive_json()["type"] == "draft_plan.item"
+            assert websocket.receive_json()["type"] == "draft_plan.item"
+            assert websocket.receive_json() == {
+                "type": "draft_plan.ready",
+                "request_key": "req-2",
+            }
+
+            assert prompts == ["first prompt", "second prompt"]
 
     asyncio.run(engine.dispose())

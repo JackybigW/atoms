@@ -495,6 +495,7 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
     stopRequestedRef.current = true;
     bootstrapAbortControllerRef.current?.abort();
     setIsStopping(true);
+    setPendingDraftPlan(null);
     sessionRef.current?.stopRun();
     ignoreAssistantEventsRef.current = true;
     stopTypingLoop();

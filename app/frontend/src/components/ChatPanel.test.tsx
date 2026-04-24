@@ -293,6 +293,54 @@ describe("ChatPanel", () => {
     expect(screen.getByRole("button", { name: /approve/i })).toBeInTheDocument();
   });
 
+  it("clears a ready draft plan card when Stop is clicked", async () => {
+    render(
+      <WorkspaceProvider>
+        <WorkspaceHarness>
+          <ChatPanel mode="engineer" />
+        </WorkspaceHarness>
+      </WorkspaceProvider>
+    );
+
+    fireEvent.change(screen.getByPlaceholderText(/Describe what you want to build/i), {
+      target: { value: "build auth" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /send message/i }));
+
+    await waitFor(() => {
+      expect(realtimeHarness.sendUserMessage).toHaveBeenCalled();
+    });
+
+    act(() => {
+      realtimeHarness.onEvent?.({ type: "draft_plan.start", request_key: "req-stop" });
+      realtimeHarness.onEvent?.({
+        type: "draft_plan.item",
+        request_key: "req-stop",
+        item: { id: "1", text: "Create homepage" },
+      });
+      realtimeHarness.onEvent?.({
+        type: "draft_plan.item",
+        request_key: "req-stop",
+        item: { id: "2", text: "Add billing page" },
+      });
+      realtimeHarness.onEvent?.({
+        type: "draft_plan.item",
+        request_key: "req-stop",
+        item: { id: "3", text: "Ship deploy flow" },
+      });
+      realtimeHarness.onEvent?.({ type: "draft_plan.ready", request_key: "req-stop" });
+    });
+
+    expect(screen.getByText("Draft Plan")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /approve/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /stop agent/i }));
+
+    expect(realtimeHarness.stopRun).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Draft Plan")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
+  });
+
   it("calls approveDraftPlan with the current draft plan request_key", async () => {
     render(
       <WorkspaceProvider>
