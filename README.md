@@ -2,6 +2,8 @@
 
 > **AI 全栈工程师工作台** — 用自然语言描述你的想法，让 Agent 帮你生成、运行、预览完整的 Web 应用。
 
+**🌐 在线体验：[jackybigwang.site](https://jackybigwang.site)**
+
 ```
 用户输入一句话  →  Agent 规划 + 编码  →  沙箱自动启动  →  实时预览
 ```
@@ -46,7 +48,7 @@ Atoms 是一个**自托管的 AI 编程工作台**，核心能力是让大语言
 
 ### 🔐 认证系统
 - 支持邮箱注册 / 登录
-- **OIDC 社交登录**（Google、Auth0），JWT 鉴权
+- **Google 原生 OIDC 登录**（直连 `accounts.google.com`，无第三方中间层），JWT 鉴权
 - 完整的邮箱验证、忘记密码、重置密码流程
 
 ### 🗂️ 项目工作台
@@ -256,7 +258,16 @@ pnpm test
 
 ---
 
-## 部署
+## 线上部署
+
+**生产环境**：[https://jackybigwang.site](https://jackybigwang.site)
+
+- 服务器：腾讯云 Linux，Python 3.11 + Node 20
+- 流量入口：Cloudflare Tunnel（无需暴露公网 IP）→ Nginx → FastAPI / 前端静态文件
+- 进程管理：systemd（`atoms-backend.service`）
+- 数据库：PostgreSQL
+
+## 本地部署
 
 ### 生产环境（Linux + systemd + Nginx）
 
