@@ -82,11 +82,10 @@ class ToolCallAgent(ReActAgent):
         )
         
         try:
-            summary_response = await self.llm.ask(
+            summary = await self.llm.ask(
                 messages=[Message.user_message(summary_prompt)],
                 system_msgs=[Message.system_message("You are an expert summarizer for an AI agent's memory.")],
             )
-            summary = summary_response.content
         except Exception as e:
             logger.error(f"Failed to auto-compact: {e}")
             return

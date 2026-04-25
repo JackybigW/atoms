@@ -391,65 +391,6 @@ class LLM:
 
         return formatted_messages
 
-    # Conservative context budget — keeps us well inside MiniMax-M2.7's window.
-    # Increase if the model supports a larger context.
-    CONTEXT_BUDGET_TOKENS = 20_000
-    # Tool results longer than this get truncated before sending.
-    MAX_TOOL_RESULT_CHARS = 6_000
-
-    def _trim_messages_to_budget(self, messages: List[dict]) -> List[dict]:
-        """Drop old non-system messages until the list fits within CONTEXT_BUDGET_TOKENS.
-
-        Strategy:
-        1. Truncate individual tool results that are excessively long.
-        2. Keep all system messages.
-        3. Sliding-window the remaining conversation from newest → oldest until the
-           token budget is satisfied.
-        """
-        # Step 1: truncate large tool results in-place
-        trimmed = []
-        for msg in messages:
-            if (
-                msg.get("role") == "tool"
-                and isinstance(msg.get("content"), str)
-                and len(msg["content"]) > self.MAX_TOOL_RESULT_CHARS
-            ):
-                msg = {
-                    **msg,
-                    "content": msg["content"][: self.MAX_TOOL_RESULT_CHARS]
-                    + "\n...[output truncated for context]",
-                }
-            trimmed.append(msg)
-        messages = trimmed
-
-        if self.count_message_tokens(messages) <= self.CONTEXT_BUDGET_TOKENS:
-            return messages
-
-        # Step 2: partition system vs conversation messages
-        system_msgs = [m for m in messages if m.get("role") == "system"]
-        convo_msgs = [m for m in messages if m.get("role") != "system"]
-        system_tokens = self.count_message_tokens(system_msgs)
-        budget = self.CONTEXT_BUDGET_TOKENS - system_tokens
-
-        # Step 3: greedily keep messages from newest → oldest
-        kept: List[dict] = []
-        used = 0
-        for msg in reversed(convo_msgs):
-            t = self.count_message_tokens([msg])
-            if used + t > budget and kept:
-                break
-            kept.insert(0, msg)
-            used += t
-
-        dropped = len(convo_msgs) - len(kept)
-        if dropped:
-            logger.warning(
-                "Context trim: dropped %d old messages to fit within %d token budget",
-                dropped,
-                self.CONTEXT_BUDGET_TOKENS,
-            )
-        return system_msgs + kept
-
     @retry(
         wait=wait_random_exponential(min=1, max=60),
         stop=stop_after_attempt(6),
@@ -787,9 +728,6 @@ class LLM:
                 messages = system_msgs + self.format_messages(messages, supports_images)
             else:
                 messages = self.format_messages(messages, supports_images)
-
-            # Trim context to stay within the model's context window
-            messages = self._trim_messages_to_budget(messages)
 
             # Calculate input token count
             input_tokens = self.count_message_tokens(messages)
