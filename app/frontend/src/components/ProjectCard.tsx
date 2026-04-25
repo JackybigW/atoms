@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import {
   MoreHorizontal,
   Globe,
@@ -8,6 +8,7 @@ import {
   ExternalLink,
   Clock,
   Code2,
+  Pencil,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -44,14 +45,32 @@ interface ProjectCardProps {
   project: Project;
   onOpen: (id: number) => void;
   onDelete: (id: number) => void;
+  onRename: (id: number, newName: string) => void;
 }
 
 export default function ProjectCard({
   project,
   onOpen,
   onDelete,
+  onRename,
 }: ProjectCardProps) {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(project.name);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (isRenaming) {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }
+  }, [isRenaming]);
+
+  const commitRename = () => {
+    const trimmed = renameValue.trim();
+    if (trimmed && trimmed !== project.name) onRename(project.id, trimmed);
+    setIsRenaming(false);
+  };
 
   const timeAgo = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -109,9 +128,24 @@ export default function ProjectCard({
         <div className="p-4">
           <div className="flex items-start justify-between mb-2">
             <div className="flex-1 min-w-0">
-              <h3 className="text-sm font-semibold text-white truncate">
-                {project.name}
-              </h3>
+              {isRenaming ? (
+                <input
+                  ref={renameInputRef}
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commitRename();
+                    if (e.key === "Escape") { setRenameValue(project.name); setIsRenaming(false); }
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="w-full text-sm font-semibold text-white bg-[#27272A] border border-[#7C3AED]/60 rounded px-1.5 py-0.5 outline-none"
+                />
+              ) : (
+                <h3 className="text-sm font-semibold text-white truncate">
+                  {project.name}
+                </h3>
+              )}
               {project.description && (
                 <p className="text-xs text-[#71717A] truncate mt-0.5">
                   {project.description}
@@ -137,6 +171,17 @@ export default function ProjectCard({
                 >
                   <Code2 className="w-4 h-4 mr-2" />
                   Open Workspace
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="text-[#FAFAFA] cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRenameValue(project.name);
+                    setIsRenaming(true);
+                  }}
+                >
+                  <Pencil className="w-4 h-4 mr-2" />
+                  Rename
                 </DropdownMenuItem>
                 {project.deploy_url && (
                   <DropdownMenuItem

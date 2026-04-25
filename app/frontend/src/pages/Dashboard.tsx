@@ -144,6 +144,20 @@ export default function DashboardPage() {
     }
   };
 
+  const handleRename = async (id: number, newName: string) => {
+    try {
+      await client.entities.projects.update({
+        id: String(id),
+        data: { name: newName, updated_at: new Date().toISOString() },
+      });
+      setProjects((prev) => prev.map((p) => p.id === id ? { ...p, name: newName } : p));
+      toast.success("Project renamed");
+    } catch (err) {
+      console.error("Failed to rename project:", err);
+      toast.error("Failed to rename project");
+    }
+  };
+
   const handleOpen = (id: number) => {
     navigate(`/workspace/${id}`);
   };
@@ -260,6 +274,7 @@ export default function DashboardPage() {
                 project={project}
                 onOpen={handleOpen}
                 onDelete={handleDelete}
+                onRename={handleRename}
               />
             ))}
           </div>
