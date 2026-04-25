@@ -3,9 +3,11 @@ import { client } from "@/lib/api";
 import { getAPIBaseURL } from "@/lib/config";
 import { buildAuthHeaders } from "@/lib/authToken";
 import { createAgentRealtimeSession, type AgentRealtimeEvent } from "@/lib/agentRealtime";
+import { useDraftPlan } from "@/hooks/useDraftPlan";
 import { useAuth } from "@/contexts/AuthContext";
 import { useWorkspace } from "@/contexts/WorkspaceContext";
 import { ThinkingDisclosure } from "@/components/chat/ThinkingDisclosure";
+import { ThinkingBubble } from "@/components/chat/ThinkingBubble";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -100,11 +102,6 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
   const [isTaskChecklistExpanded, setIsTaskChecklistExpanded] = useState(true);
   const [isProgressExpanded, setIsProgressExpanded] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
-  const [pendingDraftPlan, setPendingDraftPlan] = useState<{
-    request_key: string;
-    items: Array<{ id: string; text: string }>;
-    isReady: boolean;
-  } | null>(null);
   const activeAssistantRawRef = useRef("");
   const activeAssistantRenderedRef = useRef("");
   const activeAssistantAgentRef = useRef("engineer");
@@ -116,6 +113,10 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const sessionRef = useRef<ReturnType<typeof createAgentRealtimeSession> | null>(null);
+
+  const { draftPlan, handleDraftPlanEvent, clearDraftPlan, startApproving } = useDraftPlan({
+    stopRequestedRef,
+  });
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -187,7 +188,8 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
 
   const resetActiveAssistantState = useCallback(() => {
     stopTypingLoop();
-    ignoreAssistantEventsRef.current = true;
+    // Do NOT set ignoreAssistantEventsRef here — that blocks all subsequent
+    // assistant messages in the same session. Only handleStop sets it.
     activeAssistantRawRef.current = "";
     activeAssistantRenderedRef.current = "";
     activeAssistantAgentRef.current = "engineer";
@@ -204,8 +206,6 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
 
   const commitAssistantReply = useCallback(
     (content: string) => {
-      activeAssistantRenderedRef.current = content;
-      setActiveAssistantRendered(content);
       const assistantMessage: Message = {
         role: "assistant",
         agent: activeAssistantAgentRef.current,
@@ -215,9 +215,11 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
       };
       appendMessage(assistantMessage);
       void saveMessage(assistantMessage);
-      settleStreamingState();
+      // Reset the streaming buffer but keep isLoading=true — the session may
+      // send more messages. Full settle happens on session.state:completed/failed.
+      resetActiveAssistantState();
     },
-    [appendMessage, saveMessage, selectedModel, settleStreamingState]
+    [appendMessage, saveMessage, selectedModel, resetActiveAssistantState]
   );
 
   useEffect(() => {
@@ -271,50 +273,13 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
     (event: AgentRealtimeEvent) => {
       applyRealtimeEvent(event);
 
-      if (event.type === "draft_plan.start") {
-        if (ignoreAssistantEventsRef.current || stopRequestedRef.current) {
-          return;
-        }
-        setPendingDraftPlan({ request_key: event.request_key, items: [], isReady: false });
-        return;
-      }
-      if (event.type === "draft_plan.item") {
-        if (ignoreAssistantEventsRef.current || stopRequestedRef.current) {
-          return;
-        }
-        setPendingDraftPlan((current) => {
-          if (!current || current.request_key !== event.request_key) {
-            return current;
-          }
-          return {
-            ...current,
-            items: [...current.items, event.item],
-          };
-        });
-        return;
-      }
-      if (event.type === "draft_plan.ready") {
-        if (ignoreAssistantEventsRef.current || stopRequestedRef.current) {
-          return;
-        }
-        setPendingDraftPlan((current) => {
-          if (!current || current.request_key !== event.request_key) {
-            return current;
-          }
-          return {
-            ...current,
-            isReady: true,
-          };
-        });
-        return;
-      }
-      if (event.type === "draft_plan.approved") {
-        setPendingDraftPlan((current) => {
-          if (!current || current.request_key !== event.request_key) {
-            return current;
-          }
-          return null;
-        });
+      if (
+        event.type === "draft_plan.start" ||
+        event.type === "draft_plan.item" ||
+        event.type === "draft_plan.ready" ||
+        event.type === "draft_plan.approved"
+      ) {
+        handleDraftPlanEvent(event);
         return;
       }
 
@@ -337,9 +302,10 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
         const content = activeAssistantRawRef.current.trim();
         if (content) {
           commitAssistantReply(content);
-          return;
+        } else {
+          // Empty message — clear buffer but stay loading.
+          resetActiveAssistantState();
         }
-        settleStreamingState();
         return;
       }
 
@@ -350,9 +316,6 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
       }
 
       if (event.type === "session.state" && (event.status === "completed" || event.status === "failed")) {
-        if (!stopRequestedRef.current) {
-          return;
-        }
         settleStreamingState();
         return;
       }
@@ -367,7 +330,7 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
         settleStreamingState();
       }
     },
-    [addTerminalLog, appendMessage, applyRealtimeEvent, commitAssistantReply, settleStreamingState]
+    [addTerminalLog, appendMessage, applyRealtimeEvent, commitAssistantReply, handleDraftPlanEvent, resetActiveAssistantState, settleStreamingState]
   );
 
   const handleSend = async () => {
@@ -495,7 +458,7 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
     stopRequestedRef.current = true;
     bootstrapAbortControllerRef.current?.abort();
     setIsStopping(true);
-    setPendingDraftPlan(null);
+    clearDraftPlan();
     sessionRef.current?.stopRun();
     ignoreAssistantEventsRef.current = true;
     stopTypingLoop();
@@ -665,6 +628,9 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
             </div>
           </div>
         ))}
+        {isLoading && !activeAssistantRendered && !isTyping && progressItems.length === 0 && !draftPlan && (
+          <ThinkingBubble />
+        )}
         {(activeAssistantRendered || progressItems.length > 0) && (
           <div className="flex gap-3">
             <div className="flex-shrink-0">
@@ -718,7 +684,7 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
             </div>
           </div>
         )}
-        {pendingDraftPlan && (
+        {draftPlan && (
           <div className="flex gap-3">
             <div className="flex-shrink-0">
               <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#7C3AED] to-[#A855F7] flex items-center justify-center">
@@ -729,9 +695,9 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
               <div className="text-[10px] font-semibold uppercase tracking-wider mb-2 text-[#A855F7]">
                 Draft Plan
               </div>
-              {pendingDraftPlan.items.length > 0 ? (
-                <ul className={pendingDraftPlan.isReady ? "space-y-1 mb-3" : "space-y-1"}>
-                  {pendingDraftPlan.items.map((item) => (
+              {draftPlan.items.length > 0 ? (
+                <ul className={draftPlan.isReady ? "space-y-1 mb-3" : "space-y-1"}>
+                  {draftPlan.items.map((item) => (
                     <li key={item.id} className="text-sm text-[#E4E4E7] flex gap-2">
                       <span className="text-[#71717A]">{item.id}.</span>
                       <span>{item.text}</span>
@@ -739,12 +705,15 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
                   ))}
                 </ul>
               ) : null}
-              {pendingDraftPlan.isReady ? (
+              {draftPlan.isReady ? (
                 <Button
                   size="sm"
-                  className="bg-[#7C3AED] hover:bg-[#6D28D9] text-white h-7 px-3 text-xs transition-opacity duration-200 animate-in fade-in-0"
+                  disabled={draftPlan.isApproving}
+                  className="bg-[#7C3AED] hover:bg-[#6D28D9] text-white h-7 px-3 text-xs transition-opacity duration-200 animate-in fade-in-0 disabled:opacity-50 disabled:cursor-not-allowed"
                   onClick={() => {
-                    sessionRef.current?.approveDraftPlan({ requestKey: pendingDraftPlan.request_key });
+                    startApproving(draftPlan.request_key, () => {
+                      sessionRef.current?.approveDraftPlan({ requestKey: draftPlan.request_key });
+                    });
                   }}
                 >
                   Approve

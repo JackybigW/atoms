@@ -17,6 +17,7 @@ import Register from './pages/Register';
 import VerifyEmail from './pages/VerifyEmail';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
+import FateMenu from './pages/FateMenu';
 
 const queryClient = new QueryClient();
 
@@ -41,6 +42,7 @@ const App = () => (
             <Route path="/explore" element={<Explore />} />
             <Route path="/auth/callback" element={<AuthCallback />} />
             <Route path="/auth/error" element={<AuthError />} />
+            <Route path="/fate-menu" element={<FateMenu />} />
           </Routes>
         </BrowserRouter>
       </AuthProvider>

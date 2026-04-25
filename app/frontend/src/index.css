@@ -99,3 +99,21 @@
     @apply bg-background text-foreground;
   }
 }
+
+@keyframes thinking-shimmer {
+  0% {
+    background-position: 200% center;
+  }
+  100% {
+    background-position: -200% center;
+  }
+}
+
+.thinking-shimmer {
+  background: linear-gradient(90deg, #52525b 0%, #a1a1aa 35%, #e4e4e7 50%, #a1a1aa 65%, #52525b 100%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: thinking-shimmer 2s linear infinite;
+}
