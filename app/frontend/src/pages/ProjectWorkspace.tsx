@@ -4,6 +4,7 @@ import { client } from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { WorkspaceProvider, useWorkspace } from "@/contexts/WorkspaceContext";
 import { ensureWorkspaceRuntime } from "@/lib/workspaceRuntime";
+import { buildAuthHeaders } from "@/lib/authToken";
 import ChatPanel from "@/components/ChatPanel";
 import CodeEditor from "@/components/CodeEditor";
 import { Button } from "@/components/ui/button";
@@ -159,7 +160,7 @@ export function WorkspaceInner() {
   const [isPublishing, setIsPublishing] = useState(false);
   // Sync internal id to context
   useEffect(() => {
-    setProjectId(internalId);
+    if (internalId !== null) setProjectId(internalId);
   }, [internalId, setProjectId]);
 
   // Ensure workspace runtime only after the workspace context has switched projects.
@@ -200,7 +201,9 @@ export function WorkspaceInner() {
     if (!routeProjectNumber || !isAuthenticated) return;
     const loadProject = async () => {
       try {
-        const res = await fetch(`/api/v1/entities/projects/by-number/${routeProjectNumber}`);
+        const res = await fetch(`/api/v1/entities/projects/by-number/${routeProjectNumber}`, {
+          headers: buildAuthHeaders(),
+        });
         if (!res.ok) throw new Error("Project not found");
         const data = await res.json();
         if (data) {

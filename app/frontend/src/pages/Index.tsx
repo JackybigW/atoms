@@ -55,8 +55,8 @@ export default function LandingPage() {
           query: { status: "active" },
           limit: 50,
         });
-        if (projectsRes?.data?.items) {
-          workspaceNum = projectsRes.data.items.length + 1;
+        if (projectsRes?.data?.items?.length > 0) {
+          workspaceNum = Math.max(...projectsRes.data.items.map((p: Record<string, unknown>) => (p.project_number as number) || 0)) + 1;
         }
       } catch {
         // fallback: use generic name

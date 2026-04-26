@@ -37,7 +37,7 @@ def upgrade() -> None:
         )
 
     # 3. Make non-nullable
-    op.alter_column('projects', 'project_number', nullable=False, server_default='0')
+    op.alter_column('projects', 'project_number', nullable=False)
 
     # 4. Add unique constraint
     op.create_unique_constraint('uq_user_project_number', 'projects', ['user_id', 'project_number'])

@@ -18,28 +18,33 @@ class ProjectsService:
 
     async def create(self, data: Dict[str, Any], user_id: Optional[str] = None) -> Optional[Projects]:
         """Create a new projects"""
-        try:
-            if user_id:
-                data['user_id'] = user_id
-            # Auto-assign per-user project number
-            if 'project_number' not in data or data['project_number'] is None:
-                max_num_result = await self.db.execute(
-                    select(func.max(Projects.project_number)).where(
-                        Projects.user_id == user_id
+        if user_id:
+            data['user_id'] = user_id
+
+        for attempt in range(3):
+            try:
+                if 'project_number' not in data or data['project_number'] is None:
+                    max_num_result = await self.db.execute(
+                        select(func.max(Projects.project_number)).where(
+                            Projects.user_id == user_id
+                        )
                     )
-                )
-                max_num = max_num_result.scalar() or 0
-                data['project_number'] = max_num + 1
-            obj = Projects(**data)
-            self.db.add(obj)
-            await self.db.commit()
-            await self.db.refresh(obj)
-            logger.info(f"Created projects with id: {obj.id}")
-            return obj
-        except Exception as e:
-            await self.db.rollback()
-            logger.error(f"Error creating projects: {str(e)}")
-            raise
+                    data['project_number'] = (max_num_result.scalar() or 0) + 1
+                obj = Projects(**data)
+                self.db.add(obj)
+                await self.db.commit()
+                await self.db.refresh(obj)
+                logger.info(f"Created projects with id: {obj.id}")
+                return obj
+            except Exception as e:
+                await self.db.rollback()
+                err_str = str(e)
+                # Retry on unique constraint violation for project_number (concurrent creation race)
+                if attempt < 2 and "uq_user_project_number" in err_str:
+                    data.pop('project_number', None)
+                    continue
+                logger.error(f"Error creating projects: {err_str}")
+                raise
 
     async def check_ownership(self, obj_id: int, user_id: str) -> bool:
         """Check if user owns this record"""

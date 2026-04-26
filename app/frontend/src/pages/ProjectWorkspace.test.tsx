@@ -34,18 +34,6 @@ vi.mock("@/components/CodeEditor", () => ({
 vi.mock("@/lib/api", () => ({
   client: {
     entities: {
-      projects: {
-        get: vi.fn().mockResolvedValue({
-          data: {
-            id: 42,
-            name: "Test Project",
-            description: "",
-            visibility: "private",
-            framework: "react",
-            deploy_url: null,
-          },
-        }),
-      },
       project_files: {
         query: vi.fn().mockResolvedValue({ data: { items: [] } }),
       },
@@ -55,6 +43,24 @@ vi.mock("@/lib/api", () => ({
     },
   },
 }));
+
+// Mock fetch for the /by-number/ endpoint
+vi.stubGlobal(
+  "fetch",
+  vi.fn().mockResolvedValue({
+    ok: true,
+    json: () =>
+      Promise.resolve({
+        id: 42,
+        project_number: 42,
+        name: "Test Project",
+        description: "",
+        visibility: "private",
+        framework: "react",
+        deploy_url: null,
+      }),
+  })
+);
 
 afterEach(() => {
   cleanup();
@@ -95,7 +101,7 @@ describe("task summary strip", () => {
     render(
       <MemoryRouter initialEntries={["/workspace/42"]}>
         <Routes>
-          <Route path="/workspace/:id" element={<ProjectWorkspacePage />} />
+          <Route path="/workspace/:projectNumber" element={<ProjectWorkspacePage />} />
         </Routes>
       </MemoryRouter>
     );
@@ -111,7 +117,7 @@ it("shows degraded banner when backend is not yet running", async () => {
   render(
     <MemoryRouter initialEntries={["/workspace/42"]}>
       <Routes>
-        <Route path="/workspace/:id" element={<ProjectWorkspacePage />} />
+        <Route path="/workspace/:projectNumber" element={<ProjectWorkspacePage />} />
       </Routes>
     </MemoryRouter>
   );

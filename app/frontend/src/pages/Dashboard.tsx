@@ -201,7 +201,7 @@ export default function DashboardPage() {
           <Button
             className="bg-gradient-to-r from-[#7C3AED] to-[#A855F7] text-white hover:opacity-90 border-0"
             onClick={() => {
-              const nextNum = projects.length + 1;
+              const nextNum = projects.length > 0 ? Math.max(...projects.map(p => p.project_number)) + 1 : 1;
               setNewName(`Workspace ${nextNum}`);
               setNewDesc("");
               setShowCreate(true);
@@ -267,7 +267,8 @@ export default function DashboardPage() {
               <Button
                 className="bg-gradient-to-r from-[#7C3AED] to-[#A855F7] text-white hover:opacity-90 border-0"
                 onClick={() => {
-                  setNewName(`Workspace ${projects.length + 1}`);
+                  const nextNum = projects.length > 0 ? Math.max(...projects.map(p => p.project_number)) + 1 : 1;
+                  setNewName(`Workspace ${nextNum}`);
                   setNewDesc("");
                   setShowCreate(true);
                 }}
