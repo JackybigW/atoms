@@ -48,6 +48,12 @@ export function createAgentRealtimeSession({
   const pendingFrames: string[] = [];
   let isOpen = false;
 
+  const pingInterval = setInterval(() => {
+    if (isOpen) {
+      socket.send(JSON.stringify({ type: "ping" }));
+    }
+  }, 15000);
+
   const flushPendingFrames = () => {
     if (!isOpen) return;
     while (pendingFrames.length > 0) {
@@ -78,6 +84,7 @@ export function createAgentRealtimeSession({
 
   socket.onclose = () => {
     isOpen = false;
+    clearInterval(pingInterval);
   };
 
   return {

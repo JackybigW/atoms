@@ -105,7 +105,21 @@ class DraftPlanTool(BaseTool):
 
         logger.info("draft_plan waiting for approval project_id=%s request_key=%s", self._project_id, request_key)
         try:
-            await asyncio.wait_for(approval_event.wait(), timeout=self._approval_timeout)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + self._approval_timeout
+            while True:
+                if self._stop_event is not None and self._stop_event.is_set():
+                    self._service.delete(self._project_id, request_key)
+                    logger.warning("draft_plan stopped by stop_event project_id=%s request_key=%s", self._project_id, request_key)
+                    raise asyncio.CancelledError("Session stopped by user while waiting for plan approval")
+                
+                try:
+                    await asyncio.wait_for(approval_event.wait(), timeout=1.0)
+                    break
+                except asyncio.TimeoutError:
+                    if loop.time() >= deadline:
+                        raise asyncio.TimeoutError()
+
         except asyncio.TimeoutError:
             self._service.delete(self._project_id, request_key)
             logger.warning(
