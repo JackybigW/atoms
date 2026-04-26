@@ -130,6 +130,7 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
   // Load messages for project
   useEffect(() => {
     if (!projectId || !isAuthenticated) return;
+    console.log("[chat] loadMessages fired projectId=", projectId);
     const loadMessages = async () => {
       try {
         const res = await client.entities.messages.query({
@@ -138,6 +139,7 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
           limit: 100,
         });
         if (res?.data?.items) {
+          console.log("[chat] loadMessages replacing messages count=", res.data.items.length);
           setMessages(
             res.data.items.map((m: Record<string, unknown>) => ({
               id: m.id as number,
@@ -176,12 +178,16 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
   }, [projectId, selectedModel]);
 
   const appendMessage = useCallback((message: Message) => {
-    setMessages((prev) => [...prev, message]);
+    setMessages((prev) => {
+      console.log("[chat] appendMessage total=", prev.length + 1, "hasApprovedPlan=", !!message.approvedPlan);
+      return [...prev, message];
+    });
   }, []);
 
   // When plan is approved, commit it as a permanent message then clear the interactive card.
   useEffect(() => {
     if (!draftPlan?.isApproved) return;
+    console.log("[chat] committing approved plan items=", draftPlan.items.length);
     appendMessage({
       role: "assistant",
       agent: "engineer",
@@ -565,6 +571,7 @@ export default function ChatPanel({ mode }: ChatPanelProps) {
           </div>
         )}
 
+        {/* DEBUG */ console.log("[chat] render messages=", messages.length, "planMsgs=", messages.filter(m => m.approvedPlan).length)}
         {messages.map((msg, i) => (
           <div
             key={i}
