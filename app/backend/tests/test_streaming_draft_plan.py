@@ -19,7 +19,7 @@ async def test_streaming_agent_suppresses_raw_json_after_draft_plan():
             self.call_count += 1
             if self.call_count == 1:
                 return AssistantResponse(
-                    content="",
+                    content="I will help you build that! Let me start by drafting a plan.\n```json\n{\"request_key\": \"test\", \"items\": [{\"id\": \"1\", \"text\": \"Step 1\"}]}\n```",
                     tool_calls=[
                         ToolCall(
                             id="call_1",
@@ -83,3 +83,4 @@ async def test_streaming_agent_suppresses_raw_json_after_draft_plan():
     
     # The bug: assistant_contents contains '[{"id":"1","text":"Step 1"}]'
     assert '[{"id":"1","text":"Step 1"}]' not in assistant_contents, "Raw JSON leaked into assistant content!"
+    assert "I will help you build that! Let me start by drafting a plan." in assistant_contents, "Preamble was suppressed!"

@@ -38,12 +38,22 @@ class StreamingSWEAgent(SWEAgent):
             # show the JSON arguments as a chat bubble before the plan card appears.
             tool_names = {tc.function.name for tc in (message.tool_calls or [])}
             
-            should_emit_content = True
-            if "draft_plan" in tool_names:
-                should_emit_content = False
-            elif message.content:
+            content_to_emit = message.content or ""
+            
+            if content_to_emit:
+                if "draft_plan" in tool_names:
+                    import re
+                    # Remove markdown JSON block containing request_key and items
+                    pattern = re.compile(r"```json\s*\{.*?\"request_key\".*?\"items\".*?\}\s*```", re.DOTALL)
+                    content_to_emit = pattern.sub("", content_to_emit).strip()
+                    
+                    # If after stripping it's still just a raw JSON object with these keys, ignore it
+                    c_stripped = content_to_emit.strip()
+                    if c_stripped.startswith("{") and c_stripped.endswith("}") and '"request_key"' in c_stripped and '"items"' in c_stripped:
+                        content_to_emit = ""
+                
                 # Check if it's just the raw JSON of the plan (which can happen immediately after draft_plan returns)
-                c_stripped = message.content.strip()
+                c_stripped = content_to_emit.strip()
                 if c_stripped.startswith("```json"):
                     c_stripped = c_stripped[7:].strip()
                 if c_stripped.endswith("```"):
@@ -54,14 +64,14 @@ class StreamingSWEAgent(SWEAgent):
                         import json
                         parsed = json.loads(c_stripped)
                         if isinstance(parsed, list) and len(parsed) > 0 and "id" in parsed[0] and "text" in parsed[0]:
-                            should_emit_content = False
+                            content_to_emit = ""
                     except Exception:
                         pass
 
-            if (message.content or message.thinking) and should_emit_content:
+            if content_to_emit or message.thinking:
                 await self._emit(
                     "assistant",
-                    content=message.content,
+                    content=content_to_emit,
                     thinking=message.thinking,
                     agent=self.name,
                 )
