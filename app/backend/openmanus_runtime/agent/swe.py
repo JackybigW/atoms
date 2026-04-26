@@ -14,7 +14,9 @@ class SWEAgent(ToolCallAgent):
     description: str = "an autonomous AI programmer that interacts directly with the computer to solve tasks."
 
     system_prompt: str = SYSTEM_PROMPT
-    next_step_prompt: str = ""
+    next_step_prompt: str = (
+        "If you want to stop interaction, use `terminate` tool/function call."
+    )
 
     available_tools: ToolCollection = ToolCollection(
         Bash(), StrReplaceEditor(), Terminate()

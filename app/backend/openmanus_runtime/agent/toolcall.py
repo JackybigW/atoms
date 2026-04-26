@@ -185,14 +185,7 @@ class ToolCallAgent(ReActAgent):
 
             # For 'auto' mode, continue with content if no commands but content exists
             if self.tool_choices == ToolChoice.AUTO and not self.tool_calls:
-                if content:
-                    # In Atoms autonomous context, don't finish prematurely.
-                    # Prompt the agent to continue to implement using tools.
-                    self.memory.add_message(
-                        Message.user_message("System: Please proceed with the next tool call to implement your thought. Do not stop until you have used tools to complete your work or explicitly called a terminate tool.")
-                    )
-                    return True
-                return False
+                return bool(content)
 
             return bool(self.tool_calls)
         except Exception as e:
