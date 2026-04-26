@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
-import { client } from "@/lib/api";
+import { client, resetClient } from "@/lib/api";
 import { authApi } from "@/lib/auth";
 
 interface UserProfile {
@@ -133,11 +133,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (data?.detail) throw new Error(data.detail);
     if (!data?.token) throw new Error("Sign in failed");
     localStorage.setItem("token", data.token);
+    resetClient(); // force SDK to re-read the new token on next entity call
     await checkAuth();
   };
 
   const logout = async () => {
     localStorage.removeItem("token");
+    resetClient(); // force SDK to drop the old token on next entity call
     await client.auth.logout();
     setUser(null);
   };
