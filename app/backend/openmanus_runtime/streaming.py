@@ -33,7 +33,11 @@ class StreamingSWEAgent(SWEAgent):
             if message.role != "assistant":
                 continue
 
-            if message.content or message.thinking:
+            # Suppress content when the message also calls draft_plan: the plan UI
+            # handles display via draft_plan.* events; emitting raw content here would
+            # show the JSON arguments as a chat bubble before the plan card appears.
+            tool_names = {tc.function.name for tc in (message.tool_calls or [])}
+            if (message.content or message.thinking) and "draft_plan" not in tool_names:
                 await self._emit(
                     "assistant",
                     content=message.content,
