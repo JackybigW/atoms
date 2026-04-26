@@ -37,7 +37,28 @@ class StreamingSWEAgent(SWEAgent):
             # handles display via draft_plan.* events; emitting raw content here would
             # show the JSON arguments as a chat bubble before the plan card appears.
             tool_names = {tc.function.name for tc in (message.tool_calls or [])}
-            if (message.content or message.thinking) and "draft_plan" not in tool_names:
+            
+            should_emit_content = True
+            if "draft_plan" in tool_names:
+                should_emit_content = False
+            elif message.content:
+                # Check if it's just the raw JSON of the plan (which can happen immediately after draft_plan returns)
+                c_stripped = message.content.strip()
+                if c_stripped.startswith("```json"):
+                    c_stripped = c_stripped[7:].strip()
+                if c_stripped.endswith("```"):
+                    c_stripped = c_stripped[:-3].strip()
+                    
+                if c_stripped.startswith("[") and c_stripped.endswith("]") and '"id"' in c_stripped and '"text"' in c_stripped:
+                    try:
+                        import json
+                        parsed = json.loads(c_stripped)
+                        if isinstance(parsed, list) and len(parsed) > 0 and "id" in parsed[0] and "text" in parsed[0]:
+                            should_emit_content = False
+                    except Exception:
+                        pass
+
+            if (message.content or message.thinking) and should_emit_content:
                 await self._emit(
                     "assistant",
                     content=message.content,
