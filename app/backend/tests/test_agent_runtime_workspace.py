@@ -476,6 +476,79 @@ async def test_container_bash_session_rewrites_workspace_pnpm_install_to_cache()
 
 
 @pytest.mark.asyncio
+async def test_container_bash_session_does_not_rewrite_chained_frontend_install():
+    class FakeRuntimeService:
+        def __init__(self):
+            self.calls: list[tuple[str, str]] = []
+
+        async def exec(self, container_name, command):
+            self.calls.append((container_name, command))
+            return 0, "ok", ""
+
+    runtime_service = FakeRuntimeService()
+    session = ContainerBashSession(runtime_service, "container-1")
+
+    await session.run("cd /workspace/app/frontend && pnpm install --prefer-offline && pnpm run build")
+
+    assert runtime_service.calls == [
+        (
+            "container-1",
+            "cd /workspace && cd /workspace/app/frontend && pnpm install --prefer-offline && pnpm run build",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_container_bash_session_rewrites_chained_backend_install_and_preserves_tail():
+    class FakeRuntimeService:
+        def __init__(self):
+            self.calls: list[tuple[str, str]] = []
+
+        async def exec(self, container_name, command):
+            self.calls.append((container_name, command))
+            return 0, "ok", ""
+
+    runtime_service = FakeRuntimeService()
+    session = ContainerBashSession(runtime_service, "container-1")
+
+    await session.run(
+        'cd /workspace/app/backend && uv pip install --python .venv/bin/python -r requirements.txt -q 2>&1 && .venv/bin/python -c "from main import app; print(\'ok\')"'
+    )
+
+    assert runtime_service.calls == [
+        (
+            "container-1",
+            'cd /workspace && /usr/local/bin/atoms-deps-cache backend install /workspace/app/backend && cd /workspace/app/backend && .venv/bin/python -c "from main import app; print(\'ok\')"',
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_container_bash_session_rewrites_guarded_backend_install_and_preserves_tail():
+    class FakeRuntimeService:
+        def __init__(self):
+            self.calls: list[tuple[str, str]] = []
+
+        async def exec(self, container_name, command):
+            self.calls.append((container_name, command))
+            return 0, "ok", ""
+
+    runtime_service = FakeRuntimeService()
+    session = ContainerBashSession(runtime_service, "container-1")
+
+    await session.run(
+        'cd /workspace/app/backend && ([ -x .venv/bin/python ] || uv venv .venv) && uv pip install --python .venv/bin/python -r requirements.txt -q 2>&1 && .venv/bin/python -c "from main import app; print(\'ok\')"'
+    )
+
+    assert runtime_service.calls == [
+        (
+            "container-1",
+            'cd /workspace && /usr/local/bin/atoms-deps-cache backend install /workspace/app/backend && cd /workspace/app/backend && .venv/bin/python -c "from main import app; print(\'ok\')"',
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_container_bash_session_emits_command_telemetry():
     events = []
 
@@ -502,6 +575,58 @@ async def test_container_bash_session_emits_command_telemetry():
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_container_bash_session_awaits_async_command_telemetry():
+    events = []
+
+    class FakeRuntimeService:
+        async def exec(self, container_name, command):
+            return 0, "ok", ""
+
+    async def telemetry_sink(event):
+        events.append(event)
+
+    session = ContainerBashSession(
+        FakeRuntimeService(),
+        "container-1",
+        telemetry_sink=telemetry_sink,
+    )
+
+    await session.run("pwd")
+
+    assert events == [
+        {
+            "name": "bash.command",
+            "category": "bash",
+            "attrs": {
+                "command": "pwd",
+                "rewritten": False,
+                "returncode": 0,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_container_bash_session_ignores_command_telemetry_errors():
+    class FakeRuntimeService:
+        async def exec(self, container_name, command):
+            return 0, "ok", ""
+
+    def telemetry_sink(event):
+        raise RuntimeError("telemetry failed")
+
+    session = ContainerBashSession(
+        FakeRuntimeService(),
+        "container-1",
+        telemetry_sink=telemetry_sink,
+    )
+
+    result = await session.run("pwd")
+
+    assert result.output == "ok"
 
 
 @pytest.mark.asyncio
