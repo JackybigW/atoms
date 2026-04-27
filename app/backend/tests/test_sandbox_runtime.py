@@ -483,6 +483,50 @@ async def test_sandbox_smoke_request_posts_json_to_backend(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sandbox_smoke_request_timeout_raises_runtime_error(tmp_path):
+    async def slow_run_command(*args):
+        await asyncio.sleep(0.05)
+        return 0, "", ""
+
+    service = SandboxRuntimeService(
+        project_root=tmp_path,
+        run_command=slow_run_command,
+        exec_timeout_seconds=0.01,
+    )
+
+    with pytest.raises(RuntimeError, match="command timed out after 0.01s: docker exec -i container-1"):
+        await service.smoke_request(
+            "container-1",
+            service="backend",
+            method="GET",
+            path="/health",
+        )
+
+
+def test_parse_smoke_response_requires_body_marker():
+    with pytest.raises(RuntimeError, match="sandbox smoke request did not return body"):
+        SandboxRuntimeService._parse_smoke_response(
+            "HTTP_STATUS:200\nHEADER:content-type: image/png\n"
+        )
+
+
+@pytest.mark.asyncio
+async def test_sandbox_smoke_request_nonzero_returncode_includes_output(tmp_path):
+    async def fake_run_command(*args):
+        return 7, "curl stdout", "curl stderr"
+
+    service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run_command)
+
+    with pytest.raises(RuntimeError, match="curl stderr"):
+        await service.smoke_request(
+            "container-1",
+            service="backend",
+            method="GET",
+            path="/health",
+        )
+
+
+@pytest.mark.asyncio
 async def test_ensure_runtime_raises_when_docker_run_fails(tmp_path):
     workspace_root = tmp_path / "user-123" / "42"
     workspace_root.mkdir(parents=True)

@@ -273,7 +273,8 @@ class SandboxRuntimeService:
             curl_parts.extend(["--data-binary", shlex.quote(json.dumps(json_body))])
         curl_parts.append(shlex.quote(url))
 
-        command = f"""headers_file=$(mktemp)
+        command = f"""set -e
+headers_file=$(mktemp)
 body_file=$(mktemp)
 status=$({" ".join(curl_parts)})
 returncode=$?
@@ -299,10 +300,16 @@ PY
 rm -f "$headers_file" "$body_file"
 """
         docker_command = ["docker", "exec", "-i", container_name, "/bin/bash", "-lc", command, url]
-        returncode, stdout, stderr = await asyncio.wait_for(
-            self.run_command(*docker_command),
-            timeout=self._exec_timeout_for_command(command),
-        )
+        timeout_seconds = self._exec_timeout_for_command(command)
+        try:
+            returncode, stdout, stderr = await asyncio.wait_for(
+                self.run_command(*docker_command),
+                timeout=timeout_seconds,
+            )
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"command timed out after {timeout_seconds}s: {self._format_command_for_error(docker_command)}"
+            ) from exc
         if returncode != 0:
             message = stderr.strip() or stdout.strip() or "sandbox smoke request failed"
             raise RuntimeError(message)
@@ -484,7 +491,7 @@ rm -f "$headers_file" "$body_file"
     def _parse_smoke_response(output: str) -> tuple[int, dict[str, str], bytes]:
         status: int | None = None
         headers: dict[str, str] = {}
-        body = b""
+        body: bytes | None = None
 
         for raw_line in output.splitlines():
             if raw_line.startswith("HTTP_STATUS:"):
@@ -499,6 +506,8 @@ rm -f "$headers_file" "$body_file"
 
         if status is None:
             raise RuntimeError("sandbox smoke request did not return HTTP status")
+        if body is None:
+            raise RuntimeError("sandbox smoke request did not return body")
 
         return status, headers, body
 
