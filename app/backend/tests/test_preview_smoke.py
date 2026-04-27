@@ -5,6 +5,12 @@ import pytest
 from services.preview_smoke import PreviewSmokeRunner, SmokeFailure, load_smoke_contract
 
 
+def write_smoke_contract(tmp_path, contract):
+    atoms_dir = tmp_path / ".atoms"
+    atoms_dir.mkdir()
+    (atoms_dir / "smoke.json").write_text(json.dumps(contract), encoding="utf-8")
+
+
 def test_load_smoke_contract_reads_checks(tmp_path):
     atoms_dir = tmp_path / ".atoms"
     atoms_dir.mkdir()
@@ -121,3 +127,146 @@ def test_smoke_contract_not_required_for_health_only_backend(tmp_path):
     openapi = {"paths": {"/health": {"get": {}}, "/openapi.json": {"get": {}}}}
 
     assert smoke_contract_required(openapi) is False
+
+
+def test_load_smoke_contract_rejects_non_list_checks(tmp_path):
+    write_smoke_contract(tmp_path, {"version": 1, "checks": {"name": "health"}})
+
+    with pytest.raises(ValueError, match="checks must be a list"):
+        load_smoke_contract(tmp_path)
+
+
+def test_load_smoke_contract_rejects_string_status(tmp_path):
+    write_smoke_contract(
+        tmp_path,
+        {
+            "version": 1,
+            "checks": [
+                {
+                    "name": "health",
+                    "service": "backend",
+                    "method": "GET",
+                    "path": "/health",
+                    "expect": {"status": "200"},
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(ValueError, match=r"check 0 .*expect.status must be an int"):
+        load_smoke_contract(tmp_path)
+
+
+def test_load_smoke_contract_rejects_json_on_get(tmp_path):
+    write_smoke_contract(
+        tmp_path,
+        {
+            "version": 1,
+            "checks": [
+                {
+                    "name": "health",
+                    "service": "backend",
+                    "method": "GET",
+                    "path": "/health",
+                    "json": {"content": "atoms-smoke-test"},
+                    "expect": {"status": 200},
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(ValueError, match=r"check 0 .*json is only valid for POST"):
+        load_smoke_contract(tmp_path)
+
+
+def test_load_smoke_contract_rejects_invalid_body_prefix_base64(tmp_path):
+    write_smoke_contract(
+        tmp_path,
+        {
+            "version": 1,
+            "checks": [
+                {
+                    "name": "generate png",
+                    "service": "backend",
+                    "method": "POST",
+                    "path": "/api/generate",
+                    "expect": {"status": 200, "body_prefix_base64": "not-base64!!!"},
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(ValueError, match=r"check 0 .*body_prefix_base64 must be valid base64"):
+        load_smoke_contract(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_preview_smoke_runner_converts_request_exception_to_failure(tmp_path):
+    class Sandbox:
+        def __init__(self):
+            self.calls = 0
+
+        async def smoke_request(self, container_name, *, service, method, path, headers=None, json_body=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("connection refused")
+            return 503, {"content-type": "application/json"}, b'{"ok":false}'
+
+    write_smoke_contract(
+        tmp_path,
+        {
+            "version": 1,
+            "checks": [
+                {
+                    "name": "health",
+                    "service": "backend",
+                    "method": "GET",
+                    "path": "/health",
+                    "expect": {"status": 200},
+                },
+                {
+                    "name": "ready",
+                    "service": "backend",
+                    "method": "GET",
+                    "path": "/ready",
+                    "expect": {"status": 200},
+                }
+            ],
+        },
+    )
+
+    result = await PreviewSmokeRunner(Sandbox()).run("container-1", tmp_path)
+
+    assert result.ok is False
+    assert result.failures == [
+        SmokeFailure(name="health", reason="request failed: connection refused"),
+        SmokeFailure(name="ready", reason="expected status 200, got 503"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_preview_smoke_runner_blocks_status_mismatch(tmp_path):
+    class Sandbox:
+        async def smoke_request(self, container_name, *, service, method, path, headers=None, json_body=None):
+            return 500, {"content-type": "application/json"}, b'{"ok":false}'
+
+    write_smoke_contract(
+        tmp_path,
+        {
+            "version": 1,
+            "checks": [
+                {
+                    "name": "health",
+                    "service": "backend",
+                    "method": "GET",
+                    "path": "/health",
+                    "expect": {"status": 200},
+                }
+            ],
+        },
+    )
+
+    result = await PreviewSmokeRunner(Sandbox()).run("container-1", tmp_path)
+
+    assert result.ok is False
+    assert result.failures == [SmokeFailure(name="health", reason="expected status 200, got 500")]

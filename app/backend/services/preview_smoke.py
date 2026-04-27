@@ -52,40 +52,75 @@ def load_smoke_contract(host_root: Path) -> SmokeContract | None:
         return None
 
     payload = json.loads(contract_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Smoke contract payload must be a dict")
+
     version = payload["version"]
     if version != 1:
         raise ValueError(f"Unsupported smoke contract version: {version!r}")
 
+    checks = payload.get("checks", [])
+    if not isinstance(checks, list):
+        raise ValueError("Smoke contract checks must be a list")
+
     return SmokeContract(
         version=version,
-        checks=[_parse_check(check) for check in payload.get("checks", [])],
+        checks=[_parse_check(check, index) for index, check in enumerate(checks)],
     )
 
 
-def _parse_check(payload: dict[str, Any]) -> SmokeCheck:
+def _parse_check(payload: Any, index: int) -> SmokeCheck:
+    if not isinstance(payload, dict):
+        raise ValueError(f"Smoke check {index} must be a dict")
+
+    try:
+        name = str(payload["name"])
+    except KeyError as exc:
+        raise ValueError(f"Smoke check {index} missing name") from exc
+
+    label = f"Smoke check {index} ({name})"
     path = payload["path"]
     if not isinstance(path, str) or not path.startswith("/"):
-        raise ValueError("Smoke check path must start with /")
+        raise ValueError(f"{label} path must start with /")
 
     service = payload["service"]
     if service not in ("frontend", "backend"):
-        raise ValueError(f"Unsupported smoke check service: {service!r}")
+        raise ValueError(f"{label} has unsupported service: {service!r}")
 
     method = payload["method"]
     if method not in ("GET", "POST"):
-        raise ValueError(f"Unsupported smoke check method: {method!r}")
+        raise ValueError(f"{label} has unsupported method: {method!r}")
+
+    if method == "GET" and "json" in payload:
+        raise ValueError(f"{label} json is only valid for POST")
 
     expect_payload = payload["expect"]
+    if not isinstance(expect_payload, dict):
+        raise ValueError(f"{label} expect must be a dict")
+
+    status = expect_payload["status"]
+    if type(status) is not int:
+        raise ValueError(f"{label} expect.status must be an int")
+
+    body_prefix_base64 = expect_payload.get("body_prefix_base64")
+    if body_prefix_base64 is not None:
+        try:
+            base64.b64decode(body_prefix_base64, validate=True)
+        except ValueError as exc:
+            raise ValueError(f"{label} body_prefix_base64 must be valid base64") from exc
+
     expect = SmokeExpectation(
-        status=expect_payload["status"],
+        status=status,
         content_type=expect_payload.get("content_type"),
         body_contains=expect_payload.get("body_contains"),
-        body_prefix_base64=expect_payload.get("body_prefix_base64"),
+        body_prefix_base64=body_prefix_base64,
     )
     headers = payload.get("headers")
+    if headers is not None and not isinstance(headers, dict):
+        raise ValueError(f"{label} headers must be a dict")
 
     return SmokeCheck(
-        name=payload["name"],
+        name=name,
         service=service,
         method=method,
         path=path,
@@ -118,14 +153,18 @@ class PreviewSmokeRunner:
 
         failures: list[SmokeFailure] = []
         for check in contract.checks:
-            status, headers, body = await self.sandbox_service.smoke_request(
-                container_name,
-                service=check.service,
-                method=check.method,
-                path=check.path,
-                headers=check.headers,
-                json_body=check.json_body,
-            )
+            try:
+                status, headers, body = await self.sandbox_service.smoke_request(
+                    container_name,
+                    service=check.service,
+                    method=check.method,
+                    path=check.path,
+                    headers=check.headers,
+                    json_body=check.json_body,
+                )
+            except Exception as exc:
+                failures.append(SmokeFailure(name=check.name, reason=f"request failed: {exc}"))
+                continue
             failures.extend(_validate_response(check, status, headers, body))
 
         return SmokeResult(ok=not failures, failures=failures)
