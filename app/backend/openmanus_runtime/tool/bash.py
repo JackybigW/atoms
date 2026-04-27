@@ -237,9 +237,10 @@ class ContainerBashSession:
         return len(self.executed_commands) > 0
 
     async def run(self, command: str) -> CLIResult:
-        _validate_bash_write_targets(command, approval_gate=self.approval_gate)
-        self.executed_commands.append(command)
         rewritten_command, rewritten = _rewrite_dependency_install_command(command)
+        if not rewritten:
+            _validate_bash_write_targets(command, approval_gate=self.approval_gate)
+        self.executed_commands.append(command)
         returncode, stdout, stderr = await self.runtime_service.exec(
             self.container_name,
             f"cd /workspace && {rewritten_command}",

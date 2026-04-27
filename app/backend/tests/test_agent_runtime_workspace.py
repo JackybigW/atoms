@@ -456,6 +456,26 @@ async def test_container_bash_session_rewrites_frontend_pnpm_install_to_cache():
 
 
 @pytest.mark.asyncio
+async def test_container_bash_session_rewrites_workspace_pnpm_install_to_cache():
+    class FakeRuntimeService:
+        def __init__(self):
+            self.calls: list[tuple[str, str]] = []
+
+        async def exec(self, container_name, command):
+            self.calls.append((container_name, command))
+            return 0, "ok", ""
+
+    runtime_service = FakeRuntimeService()
+    session = ContainerBashSession(runtime_service, "container-1")
+
+    await session.run("cd /workspace && pnpm install --prefer-offline")
+
+    assert runtime_service.calls == [
+        ("container-1", "cd /workspace && /usr/local/bin/atoms-deps-cache frontend install /workspace")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_container_bash_session_emits_command_telemetry():
     events = []
 
