@@ -18,6 +18,11 @@ _SANDBOX_PROXY_ENV_MAP = {
     "ATOMS_SANDBOX_ALL_PROXY": ("ALL_PROXY", "all_proxy"),
     "ATOMS_SANDBOX_NO_PROXY": ("NO_PROXY", "no_proxy"),
 }
+_SANDBOX_PROXY_ENV_KEYS = {
+    target_key
+    for target_keys in _SANDBOX_PROXY_ENV_MAP.values()
+    for target_key in target_keys
+}
 
 
 class SandboxRuntimeService:
@@ -148,13 +153,19 @@ class SandboxRuntimeService:
 
     def _sandbox_env_args(self) -> list[str]:
         args: list[str] = []
+        for assignment in self._sandbox_env_assignments():
+            args.extend(["-e", assignment])
+        return args
+
+    def _sandbox_env_assignments(self) -> list[str]:
+        assignments: list[str] = []
         for source_key, target_keys in _SANDBOX_PROXY_ENV_MAP.items():
             value = os.environ.get(source_key)
             if not value:
                 continue
             for target_key in target_keys:
-                args.extend(["-e", f"{target_key}={value}"])
-        return args
+                assignments.append(f"{target_key}={value}")
+        return assignments
 
     def _exec_timeout_for_command(self, command: str) -> float:
         install_patterns = (
@@ -181,7 +192,10 @@ class SandboxRuntimeService:
         image_id = runtime_identity.get("image_id")
         expected_image_id = await self.inspect_image_id(self.SANDBOX_IMAGE)
         has_required_ports = {"3000/tcp", "8000/tcp"}.issubset(runtime_identity.get("port_bindings", set()))
-        has_matching_project_env = f"ATOMS_PROJECT_ID={project_id}" in runtime_identity.get("env", [])
+        runtime_env = set(runtime_identity.get("env", []))
+        has_matching_project_env = f"ATOMS_PROJECT_ID={project_id}" in runtime_env
+        expected_proxy_env = set(self._sandbox_env_assignments())
+        has_matching_proxy_env = expected_proxy_env.issubset(runtime_env)
         return (
             workspace_source == str(resolved_host_root)
             and image_id == expected_image_id
@@ -189,6 +203,7 @@ class SandboxRuntimeService:
             and runtime_identity.get("command") == ["sleep", "infinity"]
             and has_required_ports
             and has_matching_project_env
+            and has_matching_proxy_env
         )
 
     async def exec(
@@ -209,7 +224,7 @@ class SandboxRuntimeService:
             )
         except TimeoutError as exc:
             raise RuntimeError(
-                f"command timed out after {timeout_seconds}s: {' '.join(docker_command)}"
+                f"command timed out after {timeout_seconds}s: {self._format_command_for_error(docker_command)}"
             ) from exc
 
     async def start_preview_services(
@@ -326,7 +341,9 @@ class SandboxRuntimeService:
                 timeout=self.command_timeout_seconds,
             )
         except TimeoutError as exc:
-            raise RuntimeError(f"command timed out after {self.command_timeout_seconds}s: {' '.join(command)}") from exc
+            raise RuntimeError(
+                f"command timed out after {self.command_timeout_seconds}s: {self._format_command_for_error(command)}"
+            ) from exc
 
     async def _run_command(self, *command: str) -> tuple[int, str, str]:
         process = await asyncio.create_subprocess_exec(
@@ -397,3 +414,14 @@ class SandboxRuntimeService:
             return str(Path(path_value).resolve())
         except Exception:
             return path_value
+
+    @staticmethod
+    def _format_command_for_error(command: tuple[str, ...] | list[str]) -> str:
+        return " ".join(SandboxRuntimeService._redact_command_part(part) for part in command)
+
+    @staticmethod
+    def _redact_command_part(part: str) -> str:
+        key, separator, _value = part.partition("=")
+        if separator and key in _SANDBOX_PROXY_ENV_KEYS:
+            return f"{key}=<redacted>"
+        return part
