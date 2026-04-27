@@ -457,6 +457,32 @@ async def test_exec_keeps_default_timeout_for_non_install_commands(monkeypatch, 
 
 
 @pytest.mark.asyncio
+async def test_sandbox_smoke_request_posts_json_to_backend(tmp_path):
+    calls = []
+
+    async def fake_run_command(*args):
+        calls.append(args)
+        return 0, "HTTP_STATUS:200\nHEADER:content-type: image/png\nBODY_BASE64:iVBORw0KGgo=", ""
+
+    service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run_command)
+
+    status, headers, body = await service.smoke_request(
+        "container-1",
+        service="backend",
+        method="POST",
+        path="/api/generate",
+        headers={"Content-Type": "application/json"},
+        json_body={"content": "atoms-smoke-test"},
+    )
+
+    assert status == 200
+    assert headers == {"content-type": "image/png"}
+    assert body.startswith(b"\x89PNG")
+    assert calls[0][0:4] == ("docker", "exec", "-i", "container-1")
+    assert "http://127.0.0.1:8000/api/generate" in calls[0]
+
+
+@pytest.mark.asyncio
 async def test_ensure_runtime_raises_when_docker_run_fails(tmp_path):
     workspace_root = tmp_path / "user-123" / "42"
     workspace_root.mkdir(parents=True)

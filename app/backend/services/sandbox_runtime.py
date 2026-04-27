@@ -1,10 +1,12 @@
 import asyncio
+import base64
 import contextlib
 import hashlib
 import json
 import logging
 import os
 import re
+import shlex
 import time
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
@@ -239,6 +241,74 @@ class SandboxRuntimeService:
     ) -> tuple[int, str, str]:
         return await self.exec(container_name, "/usr/local/bin/start-preview", env=env)
 
+    async def smoke_request(
+        self,
+        container_name: str,
+        *,
+        service: str,
+        method: str,
+        path: str,
+        headers: dict[str, str] | None = None,
+        json_body: dict[str, object] | None = None,
+    ) -> tuple[int, dict[str, str], bytes]:
+        port = 8000 if service == "backend" else 3000
+        normalized_path = path if path.startswith("/") else f"/{path}"
+        url = f"http://127.0.0.1:{port}{normalized_path}"
+
+        curl_parts = [
+            "curl",
+            "-sS",
+            "-X",
+            shlex.quote(method.upper()),
+            "-D",
+            '"$headers_file"',
+            "-o",
+            '"$body_file"',
+            "-w",
+            shlex.quote("%{http_code}"),
+        ]
+        for key, value in (headers or {}).items():
+            curl_parts.extend(["-H", shlex.quote(f"{key}: {value}")])
+        if json_body is not None:
+            curl_parts.extend(["--data-binary", shlex.quote(json.dumps(json_body))])
+        curl_parts.append(shlex.quote(url))
+
+        command = f"""headers_file=$(mktemp)
+body_file=$(mktemp)
+status=$({" ".join(curl_parts)})
+returncode=$?
+if [ "$returncode" -ne 0 ]; then
+    cat "$headers_file" >&2
+    rm -f "$headers_file" "$body_file"
+    exit "$returncode"
+fi
+printf 'HTTP_STATUS:%s\\n' "$status"
+python3 - "$headers_file" "$body_file" <<'PY'
+import base64
+import sys
+
+with open(sys.argv[1], "rb") as headers_file:
+    for raw_line in headers_file:
+        line = raw_line.decode("iso-8859-1").strip()
+        if ":" in line:
+            print(f"HEADER:{{line}}")
+
+with open(sys.argv[2], "rb") as body_file:
+    print(f"BODY_BASE64:{{base64.b64encode(body_file.read()).decode()}}")
+PY
+rm -f "$headers_file" "$body_file"
+"""
+        docker_command = ["docker", "exec", "-i", container_name, "/bin/bash", "-lc", command, url]
+        returncode, stdout, stderr = await asyncio.wait_for(
+            self.run_command(*docker_command),
+            timeout=self._exec_timeout_for_command(command),
+        )
+        if returncode != 0:
+            message = stderr.strip() or stdout.strip() or "sandbox smoke request failed"
+            raise RuntimeError(message)
+
+        return self._parse_smoke_response(stdout)
+
     async def wait_for_service(
         self,
         container_name: str,
@@ -409,6 +479,28 @@ class SandboxRuntimeService:
                 published_ports[container_port] = int(host_port)
 
         return published_ports
+
+    @staticmethod
+    def _parse_smoke_response(output: str) -> tuple[int, dict[str, str], bytes]:
+        status: int | None = None
+        headers: dict[str, str] = {}
+        body = b""
+
+        for raw_line in output.splitlines():
+            if raw_line.startswith("HTTP_STATUS:"):
+                status = int(raw_line.removeprefix("HTTP_STATUS:").strip())
+            elif raw_line.startswith("HEADER:"):
+                header_line = raw_line.removeprefix("HEADER:")
+                name, separator, value = header_line.partition(":")
+                if separator:
+                    headers[name.strip().lower()] = value.strip()
+            elif raw_line.startswith("BODY_BASE64:"):
+                body = base64.b64decode(raw_line.removeprefix("BODY_BASE64:").strip())
+
+        if status is None:
+            raise RuntimeError("sandbox smoke request did not return HTTP status")
+
+        return status, headers, body
 
     @staticmethod
     def _normalize_existing_path(path_value: str | None) -> str | None:
