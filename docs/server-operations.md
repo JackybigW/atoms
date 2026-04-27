@@ -62,15 +62,22 @@ This avoids relying on global Git proxy state.
 ## Sandbox Image
 
 After changes under `docker/atoms-sandbox`, rebuild the runtime image on the
-server:
+server with retry support:
 
 ```bash
 cd /home/ubuntu/atoms
-DOCKER_BUILDKIT=1 docker build --network=host \
-  --build-arg http_proxy=http://127.0.0.1:7890 \
-  --build-arg https_proxy=http://127.0.0.1:7890 \
-  --build-arg HTTP_PROXY=http://127.0.0.1:7890 \
-  --build-arg HTTPS_PROXY=http://127.0.0.1:7890 \
-  -t atoms-sandbox:latest docker/atoms-sandbox
+scripts/build-atoms-sandbox.sh
 ```
 
+The script retries failed Docker builds up to three times. Before each retry it
+asks the Clash `Auto` group to refresh latency selection through the local Clash
+API, then rebuilds with `--network=host` and the Docker proxy build args.
+
+Useful overrides:
+
+```bash
+ATOMS_SANDBOX_MAX_ATTEMPTS=5 \
+ATOMS_SANDBOX_IMAGE_TAG=atoms-sandbox:latest \
+CLASH_PROXY_GROUP=Auto \
+scripts/build-atoms-sandbox.sh
+```
