@@ -175,10 +175,10 @@ async def callback(
             logger.error(
                 "[callback] Token exchange HTTP error: url=%s, error=%s",
                 token_url,
-                str(e),
+                repr(e),
                 exc_info=True,
             )
-            return redirect_with_error(f"Token exchange failed: {e}")
+            return redirect_with_error(f"Token exchange failed: {type(e).__name__} {e}")
 
         if token_response.status_code != 200:
             logger.error(
