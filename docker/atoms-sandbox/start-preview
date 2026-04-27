@@ -76,12 +76,7 @@ install_node_deps_if_needed() {
     return
   fi
 
-  if [[ ! -d "${FRONTEND_ROOT}/node_modules" ]] || [[ "${FRONTEND_ROOT}/package.json" -nt "${FRONTEND_ROOT}/node_modules" ]] || [[ -f "${FRONTEND_ROOT}/pnpm-lock.yaml" && "${FRONTEND_ROOT}/pnpm-lock.yaml" -nt "${FRONTEND_ROOT}/node_modules" ]]; then
-    (
-      cd "${FRONTEND_ROOT}"
-      pnpm install --prefer-offline
-    )
-  fi
+  /usr/local/bin/atoms-deps-cache frontend install "${FRONTEND_ROOT}"
 }
 
 resolve_backend_root() {
@@ -99,17 +94,7 @@ resolve_backend_root() {
 
 ensure_backend_venv() {
   local backend_root="$1"
-  local venv_dir="${backend_root}/.venv"
-  if [[ ! -x "${venv_dir}/bin/python" ]]; then
-    echo "start-preview: creating venv at ${venv_dir}" >&2
-    uv venv "${venv_dir}"
-  else
-    echo "start-preview: reusing existing venv at ${venv_dir}" >&2
-  fi
-  if [[ -f "${backend_root}/requirements.txt" ]]; then
-    echo "start-preview: installing requirements" >&2
-    uv pip install -q --python "${venv_dir}/bin/python" -r "${backend_root}/requirements.txt"
-  fi
+  /usr/local/bin/atoms-deps-cache backend install "${backend_root}"
 }
 
 normalize_backend_command() {

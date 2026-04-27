@@ -127,10 +127,7 @@ if [[ ! -f "package.json" ]]; then
     exit 0
 fi
 
-# Install deps if missing or if lockfile is newer than node_modules.
-if [[ ! -d "node_modules" ]] || [[ "package.json" -nt "node_modules" ]] || [[ -f "pnpm-lock.yaml" && "pnpm-lock.yaml" -nt "node_modules" ]]; then
-    pnpm install --prefer-offline
-fi
+atoms-deps-cache frontend install "${FRONTEND_ROOT}"
 
 # Detach with nohup so the dev server survives the `docker exec` that started it.
 nohup pnpm run dev \

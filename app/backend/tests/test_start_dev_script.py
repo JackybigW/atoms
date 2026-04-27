@@ -33,6 +33,9 @@ def test_start_dev_passes_vite_flags_without_extra_separator(tmp_path):
         encoding="utf-8",
     )
     fake_pnpm.chmod(0o755)
+    fake_cache = bin_dir / "atoms-deps-cache"
+    fake_cache.write_text("#!/usr/bin/env bash\nmkdir -p \"$3/node_modules\"\n", encoding="utf-8")
+    fake_cache.chmod(0o755)
 
     script_path = Path(__file__).resolve().parents[3] / "docker" / "atoms-sandbox" / "start-dev"
     env = os.environ.copy()
@@ -61,6 +64,43 @@ def test_start_dev_passes_vite_flags_without_extra_separator(tmp_path):
         "--base",
         "/preview/test/frontend/",
     ]
+
+
+def test_start_dev_uses_dependency_cache_for_frontend(tmp_path):
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "package.json").write_text('{"name":"test","scripts":{"dev":"vite"}}', encoding="utf-8")
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cache_args = tmp_path / "cache-args.txt"
+    fake_cache = bin_dir / "atoms-deps-cache"
+    fake_cache.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                f'printf "%s\\n" "$@" > "{cache_args}"',
+                "mkdir -p \"$3/node_modules\"",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    fake_cache.chmod(0o755)
+    fake_pnpm = bin_dir / "pnpm"
+    fake_pnpm.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_pnpm.chmod(0o755)
+
+    script_path = Path(__file__).resolve().parents[3] / "docker" / "atoms-sandbox" / "start-dev"
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["ATOMS_PROJECT_ID"] = "test-project"
+    env["ATOMS_WORKSPACE_ROOT"] = str(workspace_root)
+    env["ATOMS_PREVIEW_FRONTEND_BASE"] = "/preview/test/frontend/"
+
+    result = subprocess.run(["bash", str(script_path)], capture_output=True, text=True, env=env, check=False)
+
+    assert result.returncode == 0, result.stderr
+    assert _wait_for_file(cache_args).splitlines()[:3] == ["frontend", "install", str(workspace_root)]
 
 
 def test_start_dev_launches_placeholder_when_package_json_is_missing(tmp_path):

@@ -54,12 +54,16 @@ def test_start_preview_delegates_cd_prefixed_pnpm_dev_to_start_dev(tmp_path):
         encoding="utf-8",
     )
     fake_start_dev.chmod(0o755)
+    fake_cache = tmp_path / "atoms-deps-cache"
+    fake_cache.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_cache.chmod(0o755)
 
     fake_script = tmp_path / "start-preview"
     original = START_PREVIEW_SCRIPT.read_text(encoding="utf-8")
     patched = original.replace('WORKSPACE_ROOT="/workspace"', f'WORKSPACE_ROOT="{workspace_root}"')
     patched = patched.replace('Path("/workspace/.atoms/preview.json")', f'Path("{workspace_root}/.atoms/preview.json")')
     patched = patched.replace("/usr/local/bin/start-dev", str(fake_start_dev))
+    patched = patched.replace("/usr/local/bin/atoms-deps-cache", str(fake_cache))
     kill_fn_start = patched.index("kill_listeners_on_port() {")
     install_fn_start = patched.index("install_node_deps_if_needed() {")
     patched = (
@@ -207,11 +211,15 @@ def test_start_preview_normalizes_uv_run_backend_command_and_sets_backend_root(t
     fake_start_dev = tmp_path / "fake-start-dev.sh"
     fake_start_dev.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     fake_start_dev.chmod(0o755)
+    fake_cache = tmp_path / "atoms-deps-cache"
+    fake_cache.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_cache.chmod(0o755)
 
     original = START_PREVIEW_SCRIPT.read_text(encoding="utf-8")
     patched = original.replace('WORKSPACE_ROOT="/workspace"', f'WORKSPACE_ROOT="{workspace_root}"')
     patched = patched.replace('Path("/workspace/.atoms/preview.json")', f'Path("{workspace_root}/.atoms/preview.json")')
     patched = patched.replace("/usr/local/bin/start-dev", str(fake_start_dev))
+    patched = patched.replace("/usr/local/bin/atoms-deps-cache", str(fake_cache))
 
     # Replace the backend nohup launch with a marker write instead
     patched = patched.replace(
@@ -259,3 +267,66 @@ def test_start_preview_normalizes_uv_run_backend_command_and_sets_backend_root(t
     assert "uv run" not in backend_cmd, f"Expected uv run to be normalized away, got: {backend_cmd}"
     assert "uvicorn server:app" in backend_cmd, f"Expected server:app import target, got: {backend_cmd}"
     assert ".venv/bin/python" in backend_cmd, f"Expected venv python, got: {backend_cmd}"
+
+
+def test_start_preview_uses_dependency_cache_for_backend(tmp_path):
+    workspace_root = tmp_path / "workspace"
+    frontend_root = workspace_root / "app" / "frontend"
+    frontend_root.mkdir(parents=True)
+    (frontend_root / "package.json").write_text('{"name":"test","scripts":{"dev":"vite"}}', encoding="utf-8")
+    (frontend_root / "node_modules").mkdir()
+    backend_root = workspace_root / "app" / "backend"
+    backend_root.mkdir(parents=True)
+    (backend_root / "requirements.txt").write_text("fastapi\nuvicorn[standard]\n", encoding="utf-8")
+
+    atoms_dir = workspace_root / ".atoms"
+    atoms_dir.mkdir()
+    (atoms_dir / "preview.json").write_text(
+        json.dumps(
+            {
+                "frontend": {
+                    "command": "cd /workspace/app/frontend && pnpm run dev -- --host 0.0.0.0 --port 3000",
+                    "healthcheck_path": "/",
+                },
+                "backend": {
+                    "command": "cd /workspace/app/backend && uv run uvicorn main:app --host 0.0.0.0 --port 8000",
+                    "healthcheck_path": "/health",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cache_args = tmp_path / "cache-args.txt"
+    fake_cache = tmp_path / "atoms-deps-cache"
+    fake_cache.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                f'printf "%s\\n" "$@" >> "{cache_args}"',
+                'if [[ "$1" == "backend" ]]; then mkdir -p "$3/.venv/bin"; printf "#!/usr/bin/env bash\\nexec python3 \\"\\$@\\"\\n" > "$3/.venv/bin/python"; chmod +x "$3/.venv/bin/python"; fi',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    fake_cache.chmod(0o755)
+
+    original = START_PREVIEW_SCRIPT.read_text(encoding="utf-8")
+    patched = original.replace('WORKSPACE_ROOT="/workspace"', f'WORKSPACE_ROOT="{workspace_root}"')
+    patched = patched.replace('Path("/workspace/.atoms/preview.json")', f'Path("{workspace_root}/.atoms/preview.json")')
+    patched = patched.replace("/usr/local/bin/start-dev", "true")
+    patched = patched.replace("/usr/local/bin/atoms-deps-cache", str(fake_cache))
+    patched = patched.replace('nohup bash -lc "${BACKEND_COMMAND}" >"${BACKEND_LOG}" 2>&1 &', ":")
+    kill_fn_start = patched.index("kill_listeners_on_port() {")
+    install_fn_start = patched.index("install_node_deps_if_needed() {")
+    patched = patched[:kill_fn_start] + "kill_listeners_on_port() {\n  :\n}\n\n" + patched[install_fn_start:]
+
+    fake_script = tmp_path / "start-preview-cache-test"
+    fake_script.write_text(patched, encoding="utf-8")
+    fake_script.chmod(0o755)
+
+    result = subprocess.run(["bash", str(fake_script)], capture_output=True, text=True, env=os.environ.copy(), check=False)
+
+    assert result.returncode == 0, result.stderr
+    assert "backend\ninstall\n" in _wait_for_file(cache_args)
+    assert str(backend_root) in cache_args.read_text(encoding="utf-8")

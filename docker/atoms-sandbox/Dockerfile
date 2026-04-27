@@ -50,7 +50,8 @@ ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
 
 COPY start-dev /usr/local/bin/start-dev
 COPY start-preview /usr/local/bin/start-preview
-RUN chmod +x /usr/local/bin/start-dev /usr/local/bin/start-preview
+COPY atoms-deps-cache /usr/local/bin/atoms-deps-cache
+RUN chmod +x /usr/local/bin/start-dev /usr/local/bin/start-preview /usr/local/bin/atoms-deps-cache
 
 WORKDIR /workspace
 
