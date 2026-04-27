@@ -480,6 +480,58 @@ async def test_sandbox_smoke_request_posts_json_to_backend(tmp_path):
     assert body.startswith(b"\x89PNG")
     assert calls[0][0:4] == ("docker", "exec", "-i", "container-1")
     assert "http://127.0.0.1:8000/api/generate" in calls[0]
+    assert "--max-time 10.0" in calls[0][-2]
+    assert "--connect-timeout 3.0" in calls[0][-2]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_smoke_request_uses_configured_curl_timeout(tmp_path):
+    calls = []
+
+    async def fake_run_command(*args):
+        calls.append(args)
+        return 0, "HTTP_STATUS:200\nBODY_BASE64:", ""
+
+    service = SandboxRuntimeService(
+        project_root=tmp_path,
+        run_command=fake_run_command,
+        smoke_request_timeout_seconds=2.5,
+    )
+
+    await service.smoke_request("container-1", service="frontend", method="GET", path="health")
+
+    assert "http://127.0.0.1:3000/health" in calls[0]
+    assert "--max-time 2.5" in calls[0][-2]
+    assert "--connect-timeout 2.5" in calls[0][-2]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_exec_uses_install_timeout_for_dependency_cache_wrapper(monkeypatch, tmp_path):
+    observed_timeout = None
+
+    async def fake_wait_for(coro, timeout):
+        nonlocal observed_timeout
+        observed_timeout = timeout
+        return await coro
+
+    async def fake_run_command(*args):
+        return 0, "ok", ""
+
+    monkeypatch.setattr(sandbox_runtime_module.asyncio, "wait_for", fake_wait_for)
+
+    service = SandboxRuntimeService(
+        project_root=tmp_path,
+        run_command=fake_run_command,
+        exec_timeout_seconds=180.0,
+        install_timeout_seconds=600.0,
+    )
+
+    await service.exec(
+        "atoms-user-1-42",
+        "cd /workspace && /usr/local/bin/atoms-deps-cache frontend install /workspace/app/frontend",
+    )
+
+    assert observed_timeout == 600.0
 
 
 @pytest.mark.asyncio

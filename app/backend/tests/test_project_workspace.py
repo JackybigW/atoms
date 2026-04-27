@@ -23,6 +23,8 @@ def test_snapshot_files_ignores_runtime_directories(tmp_path):
     (host_root / "build").mkdir()
     (host_root / "__pycache__").mkdir()
     (host_root / ".git").mkdir()
+    (host_root / ".atoms" / "cache" / "deps").mkdir(parents=True)
+    (host_root / ".atoms").mkdir(exist_ok=True)
 
     (host_root / "src" / "App.tsx").write_text("export default function App() {}", encoding="utf-8")
     (host_root / ".venv" / "pyvenv.cfg").write_text("home = /usr/bin/python", encoding="utf-8")
@@ -32,10 +34,16 @@ def test_snapshot_files_ignores_runtime_directories(tmp_path):
     (host_root / "build" / "bundle.js").write_text("console.log('build')", encoding="utf-8")
     (host_root / "__pycache__" / "app.cpython-312.pyc").write_bytes(b"pyc")
     (host_root / ".git" / "config").write_text("[core]", encoding="utf-8")
+    (host_root / ".atoms" / "cache" / "deps" / "frontend.json").write_text('{"hash":"abc"}', encoding="utf-8")
+    (host_root / ".atoms" / "smoke.json").write_text('{"version":1,"checks":[]}', encoding="utf-8")
 
     snapshot = service.snapshot_files(host_root)
 
     assert snapshot == {
+        ".atoms/smoke.json": {
+            "content": '{"version":1,"checks":[]}',
+            "is_directory": False,
+        },
         "src/App.tsx": {
             "content": "export default function App() {}",
             "is_directory": False,

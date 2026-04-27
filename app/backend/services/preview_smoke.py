@@ -68,6 +68,8 @@ def load_smoke_contract(host_root: Path) -> SmokeContract | None:
     checks = payload["checks"]
     if not isinstance(checks, list):
         raise ValueError("Smoke contract checks must be a list")
+    if not checks:
+        raise ValueError("Smoke contract checks must not be empty")
 
     return SmokeContract(
         version=version,

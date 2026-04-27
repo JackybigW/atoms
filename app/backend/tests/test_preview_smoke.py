@@ -213,6 +213,13 @@ def test_load_smoke_contract_rejects_non_list_checks(tmp_path):
         load_smoke_contract(tmp_path)
 
 
+def test_load_smoke_contract_rejects_empty_checks(tmp_path):
+    write_smoke_contract(tmp_path, {"version": 1, "checks": []})
+
+    with pytest.raises(ValueError, match="checks must not be empty"):
+        load_smoke_contract(tmp_path)
+
+
 def test_load_smoke_contract_rejects_missing_checks(tmp_path):
     write_smoke_contract(tmp_path, {"version": 1})
 
@@ -221,7 +228,7 @@ def test_load_smoke_contract_rejects_missing_checks(tmp_path):
 
 
 def test_load_smoke_contract_rejects_missing_version(tmp_path):
-    write_smoke_contract(tmp_path, {"checks": []})
+    write_smoke_contract(tmp_path, {"checks": [valid_smoke_check()]})
 
     with pytest.raises(ValueError, match="missing version"):
         load_smoke_contract(tmp_path)

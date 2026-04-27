@@ -37,6 +37,7 @@ class SandboxRuntimeService:
         command_timeout_seconds: float = 30.0,
         exec_timeout_seconds: float = 180.0,
         install_timeout_seconds: Optional[float] = None,
+        smoke_request_timeout_seconds: float = 10.0,
     ):
         self.project_root = Path(project_root).resolve()
         self.run_command = run_command or self._run_command
@@ -47,6 +48,7 @@ class SandboxRuntimeService:
             if install_timeout_seconds is not None
             else float(os.environ.get("ATOMS_SANDBOX_INSTALL_TIMEOUT_SECONDS", "600"))
         )
+        self.smoke_request_timeout_seconds = smoke_request_timeout_seconds
 
     async def ensure_runtime(
         self,
@@ -178,6 +180,7 @@ class SandboxRuntimeService:
             "pnpm install",
             "npm install",
             "yarn install",
+            "atoms-deps-cache",
         )
         if any(pattern in command for pattern in install_patterns):
             return self.install_timeout_seconds
@@ -258,6 +261,10 @@ class SandboxRuntimeService:
         curl_parts = [
             "curl",
             "-sS",
+            "--connect-timeout",
+            shlex.quote(str(min(3.0, self.smoke_request_timeout_seconds))),
+            "--max-time",
+            shlex.quote(str(self.smoke_request_timeout_seconds)),
             "-X",
             shlex.quote(method.upper()),
             "-D",

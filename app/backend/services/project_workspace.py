@@ -14,6 +14,13 @@ IGNORED_PARTS = {
 }
 
 
+def _should_ignore_snapshot_path(relative_path: Path) -> bool:
+    parts = relative_path.parts
+    if any(part in IGNORED_PARTS for part in parts):
+        return True
+    return len(parts) >= 2 and parts[0] == ".atoms" and parts[1] == "cache"
+
+
 @dataclass(frozen=True)
 class WorkspacePaths:
     host_root: Path
@@ -61,7 +68,7 @@ class ProjectWorkspaceService:
         snapshot: dict[str, dict] = {}
 
         for path in host_root.rglob("*"):
-            if any(part in IGNORED_PARTS for part in path.relative_to(host_root).parts):
+            if _should_ignore_snapshot_path(path.relative_to(host_root)):
                 continue
             if path.is_file():
                 try:
