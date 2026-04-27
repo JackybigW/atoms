@@ -713,12 +713,26 @@ async def run_engineer_session(
 
                         if contract and contract.backend:
                             with telemetry.span("preview.smoke", category="smoke"):
-                                smoke_result = await PreviewSmokeRunner(sandbox_service).run(
-                                    container_name, paths.host_root
-                                )
+                                try:
+                                    smoke_result = await PreviewSmokeRunner(sandbox_service).run(
+                                        container_name, paths.host_root
+                                    )
+                                except Exception as smoke_exc:
+                                    message = f"smoke check error: {smoke_exc}"
+                                    recorder.error("preview failed smoke_failed")
+                                    recorder.set_status("failed")
+                                    await traced_event_sink(
+                                        {
+                                            "type": "preview_failed",
+                                            "reason": "smoke_failed",
+                                            "failures": [message],
+                                        }
+                                    )
+                                    return False
                             if not smoke_result.ok:
                                 reasons = [f"{failure.name}: {failure.reason}" for failure in smoke_result.failures]
                                 recorder.error("preview failed smoke_failed")
+                                recorder.set_status("failed")
                                 await traced_event_sink(
                                     {"type": "preview_failed", "reason": "smoke_failed", "failures": reasons}
                                 )
