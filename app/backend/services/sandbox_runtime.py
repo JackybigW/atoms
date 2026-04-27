@@ -308,7 +308,9 @@ rm -f "$headers_file" "$body_file"
             )
         except TimeoutError as exc:
             raise RuntimeError(
-                f"command timed out after {timeout_seconds}s: {self._format_command_for_error(docker_command)}"
+                "sandbox smoke request timed out after "
+                f"{timeout_seconds}s: container={container_name} service={service} "
+                f"method={method.upper()} path={normalized_path}"
             ) from exc
         if returncode != 0:
             message = stderr.strip() or stdout.strip() or "sandbox smoke request failed"

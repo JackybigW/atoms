@@ -483,24 +483,39 @@ async def test_sandbox_smoke_request_posts_json_to_backend(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_sandbox_smoke_request_timeout_raises_runtime_error(tmp_path):
+async def test_sandbox_smoke_request_timeout_uses_safe_runtime_error(tmp_path):
     async def slow_run_command(*args):
         await asyncio.sleep(0.05)
         return 0, "", ""
 
+    secret_header = "secret-auth-token"
+    secret_body = "secret-body-token"
     service = SandboxRuntimeService(
         project_root=tmp_path,
         run_command=slow_run_command,
         exec_timeout_seconds=0.01,
     )
 
-    with pytest.raises(RuntimeError, match="command timed out after 0.01s: docker exec -i container-1"):
+    with pytest.raises(RuntimeError) as exc_info:
         await service.smoke_request(
             "container-1",
             service="backend",
-            method="GET",
-            path="/health",
+            method="POST",
+            path="health",
+            headers={"Authorization": f"Bearer {secret_header}"},
+            json_body={"token": secret_body},
         )
+
+    message = str(exc_info.value)
+    assert "sandbox smoke request timed out after 0.01s" in message
+    assert "container=container-1" in message
+    assert "service=backend" in message
+    assert "method=POST" in message
+    assert "path=/health" in message
+    assert secret_header not in message
+    assert secret_body not in message
+    assert "Authorization" not in message
+    assert "set -e" not in message
 
 
 def test_parse_smoke_response_requires_body_marker():
