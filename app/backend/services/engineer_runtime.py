@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable
 from routers.workspace_runtime import build_runtime_failure_report
 
 from openmanus_runtime.streaming import StreamingSWEAgent, build_agent_llm
+from openmanus_runtime.schema import Message
 from openmanus_runtime.tool.bash import ContainerBashSession
 from openmanus_runtime.tool.file_operators import ProjectFileOperator
 from services.agent_run_logs import AgentRunLogStore
@@ -50,6 +51,69 @@ def _default_sandbox_service_factory() -> SandboxRuntimeService:
 
 def _log_prefix(trace_id: str | None) -> str:
     return f"[agent:{trace_id}]" if trace_id else "[agent]"
+
+
+def _is_tool_call_json_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "invalid function arguments json string" in message
+
+
+def _remove_invalid_tool_call_messages(agent: Any) -> int:
+    messages = getattr(agent, "messages", None)
+    if not isinstance(messages, list):
+        return 0
+
+    invalid_tool_call_ids: set[str] = set()
+    sanitized: list[Any] = []
+
+    for message in messages:
+        tool_calls = getattr(message, "tool_calls", None) or []
+        invalid_tool_names: list[str] = []
+
+        for tool_call in tool_calls:
+            function = getattr(tool_call, "function", None)
+            arguments = getattr(function, "arguments", None)
+            try:
+                json.loads(arguments or "{}")
+            except (TypeError, json.JSONDecodeError):
+                invalid_tool_call_ids.add(str(getattr(tool_call, "id", "")))
+                invalid_tool_names.append(str(getattr(function, "name", "unknown")))
+
+        if invalid_tool_names:
+            sanitized.append(
+                Message.assistant_message(
+                    (
+                        (getattr(message, "content", None) or "").strip()
+                        + "\n[Runtime removed an invalid tool call from history: "
+                        + ", ".join(invalid_tool_names)
+                        + ". The next user message contains the exact error log.]"
+                    ).strip()
+                )
+            )
+            continue
+
+        if (
+            getattr(message, "role", None) == "tool"
+            and str(getattr(message, "tool_call_id", "")) in invalid_tool_call_ids
+        ):
+            continue
+
+        sanitized.append(message)
+
+    if len(sanitized) != len(messages):
+        setattr(agent, "messages", sanitized)
+
+    return len(invalid_tool_call_ids)
+
+
+def _build_tool_json_repair_prompt(exc: Exception, removed_count: int) -> str:
+    return (
+        "TOOL CALL JSON ERROR:\n"
+        f"{exc}\n\n"
+        f"The runtime removed {removed_count} invalid tool-call record(s) from the conversation history. "
+        "Continue the same implementation from the existing workspace files. "
+        "Fix the failed file operation by using valid JSON arguments for tools, then keep verifying normally."
+    )
 
 
 def _extract_backend_dir(command: str) -> str:
@@ -488,6 +552,7 @@ async def run_engineer_session(
         session_started = False
         current_prompt = task_prompt
         result = None
+        tool_json_repair_used = False
 
         for _round in range(MAX_COMPLETION_ROUNDS):
             if not session_started:
@@ -502,7 +567,23 @@ async def run_engineer_session(
                 session_started = True
 
             with telemetry.span("agent.round", category="agent", attrs={"round": _round + 1}):
-                result = await agent.run(current_prompt)
+                try:
+                    result = await agent.run(current_prompt)
+                except Exception as exc:
+                    if _is_tool_call_json_error(exc) and not tool_json_repair_used:
+                        tool_json_repair_used = True
+                        removed_count = _remove_invalid_tool_call_messages(agent)
+                        current_prompt = _build_tool_json_repair_prompt(exc, removed_count)
+                        await log_step("Tool call JSON error: feeding error back to same agent.")
+                        await traced_event_sink(
+                            {
+                                "type": "assistant",
+                                "agent": "system",
+                                "content": current_prompt,
+                            }
+                        )
+                        continue
+                    raise
 
             has_verification = bash_session.has_verification_run()
 
