@@ -389,6 +389,13 @@ async def run_engineer_session(
             "If you build a backend, you MUST create app/backend/main.py as the entrypoint "
             "and include a GET /health endpoint that returns HTTP 200 `{\"status\": \"healthy\"}`. "
             "You MUST also create app/backend/requirements.txt containing `fastapi`, `uvicorn`, and any other dependencies.\n"
+            "If your app has any backend API beyond GET /health, you MUST create /workspace/.atoms/smoke.json. "
+            "The runtime executes this file after preview starts and before preview_ready. "
+            "Include at least one smoke check for each user-facing backend workflow. "
+            "For binary image responses, set expect.content_type and expect.body_prefix_base64. "
+            "For PNG responses, use body_prefix_base64 iVBORw0KGgo=. "
+            "Example smoke check: "
+            '{"version":1,"checks":[{"name":"generate png","service":"backend","method":"POST","path":"/api/generate","headers":{"Content-Type":"application/json"},"json":{"content":"atoms-smoke-test"},"expect":{"status":200,"content_type":"image/png","body_prefix_base64":"iVBORw0KGgo="}}]}. '
             "Python imports inside backend files MUST be relative to /workspace/app/backend/ "
             "(that is the working directory when uvicorn launches via `cd /workspace/app/backend && uvicorn main:app`). "
             "Write `from routers import color`, `from services.color_service import generate_palette` — "

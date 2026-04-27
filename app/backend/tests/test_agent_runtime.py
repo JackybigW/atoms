@@ -494,6 +494,48 @@ def test_engineer_prompt_uses_venv_python_for_backend_install(monkeypatch):
     assert "uv pip install -r requirements.txt -q 2>&1 && uv run python" not in prompt_value
 
 
+def test_engineer_prompt_requires_smoke_contract_for_backend_apps(monkeypatch):
+    captured_prompt = {"value": ""}
+
+    class FakeAgent:
+        name = "swe"
+
+        @classmethod
+        def build_for_workspace(cls, llm, event_emitter, file_operator, bash_session):
+            return cls()
+
+        async def run(self, request: str):
+            captured_prompt["value"] = request
+            return "The interaction has been completed with status: success\nSummary: ok"
+
+    monkeypatch.setattr("routers.agent_runtime.StreamingSWEAgent", FakeAgent)
+    monkeypatch.setattr("routers.agent_runtime.build_agent_llm", lambda model: None)
+    monkeypatch.setattr("routers.agent_runtime._get_workspace_service", lambda: _FakeWorkspaceService())
+    monkeypatch.setattr("routers.agent_runtime._get_sandbox_service", lambda: _FakeSandboxService())
+
+    fake_user = UserResponse(id="user-1", email="test@example.com", name="Test", role="user")
+    app = FastAPI()
+    app.include_router(router)
+
+    from dependencies.auth import get_current_user
+    from core.database import get_db
+
+    async def fake_get_current_user():
+        return fake_user
+
+    async def fake_get_db():
+        yield FakeDB()
+
+    app.dependency_overrides[get_current_user] = fake_get_current_user
+    app.dependency_overrides[get_db] = fake_get_db
+
+    response = TestClient(app).post("/api/v1/agent/run", json={"prompt": "build an API app", "project_id": 42})
+
+    assert response.status_code == 200
+    assert ".atoms/smoke.json" in captured_prompt["value"]
+    assert "body_prefix_base64" in captured_prompt["value"]
+
+
 def test_agent_run_emits_preview_bundle(monkeypatch):
     _FIXED_SESSION_KEY = "preview-session-123"
 
