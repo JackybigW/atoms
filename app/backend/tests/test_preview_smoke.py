@@ -143,6 +143,14 @@ def test_smoke_contract_not_required_for_health_only_backend(tmp_path):
     assert smoke_contract_required(openapi) is False
 
 
+def test_smoke_contract_not_required_for_custom_ignored_health_path(tmp_path):
+    from services.preview_smoke import smoke_contract_required
+
+    openapi = {"paths": {"/api/health": {"get": {}}}}
+
+    assert smoke_contract_required(openapi, ignored_paths={"/api/health"}) is False
+
+
 @pytest.mark.asyncio
 async def test_preview_smoke_runner_reports_missing_contract_when_api_routes_exist(tmp_path):
     class Sandbox:
@@ -177,6 +185,20 @@ async def test_preview_smoke_runner_ignores_invalid_json_openapi_response(tmp_pa
         async def smoke_request(self, container_name, *, service, method, path, headers=None, json_body=None):
             assert path == "/openapi.json"
             return 200, {"content-type": "application/json"}, b"not json"
+
+    result = await PreviewSmokeRunner(Sandbox()).require_contract_if_needed("container-1", tmp_path)
+
+    assert result.ok is True
+    assert result.failures == []
+
+
+@pytest.mark.parametrize("body", [b"[]", b'{"paths": []}'])
+@pytest.mark.asyncio
+async def test_preview_smoke_runner_ignores_wrong_shape_openapi_response(tmp_path, body):
+    class Sandbox:
+        async def smoke_request(self, container_name, *, service, method, path, headers=None, json_body=None):
+            assert path == "/openapi.json"
+            return 200, {"content-type": "application/json"}, body
 
     result = await PreviewSmokeRunner(Sandbox()).require_contract_if_needed("container-1", tmp_path)
 

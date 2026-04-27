@@ -715,8 +715,9 @@ async def run_engineer_session(
                             with telemetry.span("preview.smoke", category="smoke"):
                                 try:
                                     smoke_runner = PreviewSmokeRunner(sandbox_service)
+                                    ignored_smoke_paths = {backend_health_path} if backend_health_path else None
                                     contract_required_result = await smoke_runner.require_contract_if_needed(
-                                        container_name, paths.host_root
+                                        container_name, paths.host_root, ignored_paths=ignored_smoke_paths
                                     )
                                     if not contract_required_result.ok:
                                         reasons = [

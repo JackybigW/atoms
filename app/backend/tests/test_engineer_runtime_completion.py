@@ -831,6 +831,107 @@ async def test_engineer_runtime_blocks_preview_ready_when_backend_api_contract_m
 
 
 @pytest.mark.asyncio
+async def test_engineer_runtime_allows_custom_backend_healthcheck_without_smoke_contract(monkeypatch, tmp_path):
+    events = []
+
+    async def fake_event_sink(event):
+        events.append(event)
+
+    fake_files_service = MagicMock()
+    fake_files_service.get_list = AsyncMock(return_value={"items": []})
+    monkeypatch.setattr("services.project_files.Project_filesService", lambda db: fake_files_service)
+
+    fake_messages_service = MagicMock()
+    fake_messages_service.get_list = AsyncMock(return_value={"items": []})
+    monkeypatch.setattr("services.messages.MessagesService", lambda db: fake_messages_service)
+
+    fake_sessions_service = MagicMock()
+    fake_sessions_service.get_by_project = AsyncMock(return_value=None)
+    fake_session_record = MagicMock()
+    fake_session_record.preview_session_key = "123"
+    fake_session_record.preview_expires_at = None
+    fake_session_record.frontend_status = "running"
+    fake_session_record.backend_status = "running"
+    fake_sessions_service.create = AsyncMock(return_value=fake_session_record)
+
+    class FakeGate:
+        approved_request_key = "req_123"
+
+        def check_write(self, path):
+            pass
+
+    monkeypatch.setattr("services.approval_gate.ApprovalGate", lambda *args, **kwargs: FakeGate())
+
+    class SummaryAgent(FakeAgent):
+        async def run(self, prompt):
+            self.run_calls += 1
+            return "The interaction has been completed with status: success\nSummary: ok"
+
+    class FakeAgentCls:
+        @staticmethod
+        def build_for_workspace(*args, **kwargs):
+            return SummaryAgent()
+
+    host_root = tmp_path / "workspace"
+    host_root.mkdir()
+
+    class Paths:
+        container_root = "/workspace"
+
+        def __init__(self):
+            self.host_root = host_root
+
+    class Workspace:
+        def resolve_paths(self, user_id, project_id):
+            return Paths()
+
+        def materialize_files(self, host_root, file_records):
+            pass
+
+        def snapshot_files(self, host_root):
+            return {}
+
+    class Contract:
+        frontend = SimpleNamespace(healthcheck_path="/")
+        backend = SimpleNamespace(
+            command="cd /workspace/app/backend && uv run uvicorn main:app --host 0.0.0.0 --port 8000",
+            healthcheck_path="/api/health",
+        )
+
+    class HealthOnlySandbox(FakeSandboxService):
+        async def exec(self, container_name, command):
+            return 0, "ATOMS_BACKEND_CHECK_OK\n", ""
+
+        async def smoke_request(self, container_name, *, service, method, path, headers=None, json_body=None):
+            assert path == "/openapi.json"
+            return 200, {"content-type": "application/json"}, b'{"paths":{"/api/health":{"get":{}}}}'
+
+    result = await run_engineer_session(
+        db=FakeDB(),
+        user_id="user-1",
+        project_id=42,
+        prompt="build api app",
+        model="fake-model",
+        event_sink=fake_event_sink,
+        workspace_service_factory=lambda: Workspace(),
+        sandbox_service_factory=lambda: HealthOnlySandbox(),
+        agent_cls=FakeAgentCls,
+        llm_builder=lambda model: None,
+        workspace_runtime_sessions_service_cls=lambda db: fake_sessions_service,
+        preview_session_fields_factory=lambda: {"preview_session_key": "123"},
+        preview_url_builder=lambda key: {"preview_frontend_url": "http://front", "preview_backend_url": "http://back"},
+        preview_contract_loader=lambda p: Contract(),
+    )
+
+    assert result is True
+    assert any(event.get("type") == "preview_ready" for event in events)
+    assert not any(
+        event.get("type") == "preview_failed" and event.get("reason") == "smoke_contract_missing"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_engineer_runtime_blocks_preview_ready_on_smoke_failure(monkeypatch, tmp_path):
     events = []
 

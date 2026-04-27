@@ -158,12 +158,20 @@ def _optional_string(payload: dict[str, Any], field: str, label: str) -> str | N
     return value
 
 
-def smoke_contract_required(openapi: dict[str, Any]) -> bool:
-    ignored_paths = {"/health", "/openapi.json", "/docs", "/redoc"}
+def smoke_contract_required(openapi: Any, *, ignored_paths: set[str] | None = None) -> bool:
+    all_ignored_paths = {"/health", "/openapi.json", "/docs", "/redoc"}
+    if ignored_paths is not None:
+        all_ignored_paths.update(ignored_paths)
     http_methods = {"get", "post", "put", "patch", "delete"}
 
-    for path, path_item in openapi.get("paths", {}).items():
-        if path in ignored_paths:
+    if not isinstance(openapi, dict):
+        return False
+    paths = openapi.get("paths", {})
+    if not isinstance(paths, dict):
+        return False
+
+    for path, path_item in paths.items():
+        if path in all_ignored_paths:
             continue
         if isinstance(path_item, dict) and http_methods.intersection(path_item):
             return True
@@ -174,7 +182,13 @@ class PreviewSmokeRunner:
     def __init__(self, sandbox_service: Any):
         self.sandbox_service = sandbox_service
 
-    async def require_contract_if_needed(self, container_name: str, host_root: Path) -> SmokeResult:
+    async def require_contract_if_needed(
+        self,
+        container_name: str,
+        host_root: Path,
+        *,
+        ignored_paths: set[str] | None = None,
+    ) -> SmokeResult:
         try:
             contract = load_smoke_contract(host_root)
         except ValueError:
@@ -195,7 +209,7 @@ class PreviewSmokeRunner:
         except (UnicodeDecodeError, json.JSONDecodeError):
             return SmokeResult(ok=True, failures=[])
 
-        if not smoke_contract_required(openapi):
+        if not smoke_contract_required(openapi, ignored_paths=ignored_paths):
             return SmokeResult(ok=True, failures=[])
 
         return SmokeResult(
