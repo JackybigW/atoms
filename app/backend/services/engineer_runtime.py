@@ -57,6 +57,82 @@ def _extract_backend_dir(command: str) -> str:
     return m.group(1) if m else "/workspace/app/backend"
 
 
+def _build_backend_check_command(backend_dir: str, healthcheck_path: str) -> str:
+    import shlex
+
+    import_scan = r"""
+import ast
+import importlib
+from pathlib import Path
+
+root = Path.cwd()
+local_names = {
+    path.stem
+    for path in root.glob("*.py")
+    if path.name != "__init__.py"
+}
+local_names.update(
+    path.name
+    for path in root.iterdir()
+    if path.is_dir() and path.name != ".venv"
+)
+
+module_names = set()
+for path in root.rglob("*.py"):
+    if ".venv" in path.parts:
+        continue
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            module_names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            module_names.add(node.module)
+
+for module_name in sorted(module_names):
+    if module_name.split(".", 1)[0] in local_names:
+        continue
+    importlib.import_module(module_name)
+"""
+    route_check = (
+        "from main import app; "
+        "routes = [getattr(r, 'path', '') for r in app.routes]; "
+        f"assert {healthcheck_path!r} in routes, "
+        f"{('Missing ' + healthcheck_path + ' route. Found: ')!r} + str(routes); "
+        "print('ATOMS_BACKEND_CHECK_OK')"
+    )
+    return (
+        f"cd {shlex.quote(backend_dir)} && "
+        "([ -x .venv/bin/python ] || uv venv .venv) && "
+        "([ ! -f requirements.txt ] || "
+        "uv pip install --python .venv/bin/python -r requirements.txt -q 2>&1) && "
+        ".venv/bin/python - <<'PY' && "
+        f".venv/bin/python -c {shlex.quote(route_check)} 2>&1\n"
+        f"{import_scan.strip()}\n"
+        "PY\n"
+    )
+
+
+def _extract_terminate_summary(result: object) -> str:
+    if not isinstance(result, str):
+        return ""
+
+    terminate_prefix = "The interaction has been completed with status:"
+    terminate_index = result.rfind(terminate_prefix)
+    if terminate_index == -1:
+        return ""
+
+    segment = result[terminate_index:]
+    next_observation_index = segment.find("\n\nObserved output of cmd `")
+    if next_observation_index != -1:
+        segment = segment[:next_observation_index]
+
+    marker = "\nSummary:"
+    marker_index = segment.find(marker)
+    if marker_index == -1:
+        return ""
+    return segment[marker_index + len(marker):].strip()
+
+
 async def _probe_backend_health(
     sandbox_service: Any,
     container_name: str,
@@ -79,30 +155,21 @@ async def _probe_backend_health(
 
     backend_dir = _extract_backend_dir(contract.backend.command)
     healthcheck_path = contract.backend.healthcheck_path or "/health"
-
-    install_step = "([ -f requirements.txt ] && uv pip install -r requirements.txt -q 2>&1 || true)"
-    import_check = (
-        "uv run python -c \""
-        "from main import app; "
-        "routes = [getattr(r, 'path', '') for r in app.routes]; "
-        f"assert '{healthcheck_path}' in routes, "
-        f"'Missing {healthcheck_path} route. Found: ' + str(routes); "
-        "print('ok')\""
-    )
-    check_cmd = f"cd {backend_dir} && {install_step} && {import_check} 2>&1"
+    check_cmd = _build_backend_check_command(backend_dir, healthcheck_path)
 
     try:
-        _, out, _ = await sandbox_service.exec(container_name, check_cmd)
-        if out.strip().endswith("ok"):
+        returncode, out, err = await sandbox_service.exec(container_name, check_cmd)
+        stdout_lines = out.strip().splitlines()
+        if returncode == 0 and stdout_lines and stdout_lines[-1] == "ATOMS_BACKEND_CHECK_OK":
             return True, None
-        error_output = out.strip() or "(no output)"
+        error_output = (out + err).strip() or "(no output)"
     except Exception as exc:
         error_output = str(exc)
 
     return True, (
         f"Backend code check FAILED. The app could not be imported or is missing the {healthcheck_path} route.\n"
         "Fix the import errors or add the missing endpoint, then verify with:\n"
-        f"  cd {backend_dir} && uv run python -c \"from main import app; print('ok')\"\n"
+        f"  cd {backend_dir} && .venv/bin/python -c \"from main import app; print('ok')\"\n"
         f"Error output:\n```\n{error_output}\n```"
     )
 
@@ -334,8 +401,8 @@ async def run_engineer_session(
             "Do NOT create a .env file that sets VITE_ATOMS_PREVIEW_BACKEND_BASE — "
             "this variable is injected by start-preview at runtime and must not be hardcoded.\n"
             "For backend verification use ONLY the static import test — never start uvicorn manually:\n"
-            "  cd /workspace/app/backend && uv pip install -r requirements.txt -q 2>&1 && uv run python -c \"from main import app; print('ok')\"\n"
-            "Always install requirements before running the import test. "
+            "  cd /workspace/app/backend && ([ -x .venv/bin/python ] || uv venv .venv) && uv pip install --python .venv/bin/python -r requirements.txt -q 2>&1 && .venv/bin/python -c \"from main import app; print('ok')\"\n"
+            "Always install requirements with `uv pip install --python .venv/bin/python`; do not use `.venv/bin/pip`, `pip3 install`, or `python3 -m pip install`. "
             "This confirms imports and app construction without starting a process.\n"
             "If you ever start a background process for any reason, do NOT kill it before calling terminate.\n\n"
             "## Orchestration Workflow\n\n"
@@ -353,9 +420,9 @@ async def run_engineer_session(
             "   For frontend apps, create infrastructure files FIRST (package.json, vite.config.ts, index.html, main.tsx, tsconfig.json) "
             "before writing any component files. This ensures pnpm install and builds work from the start.\\n"
             "5. Verify before finishing — use ONLY these commands, do NOT start background servers:\\n"
-            "   Backend: cd /workspace/app/backend && uv pip install -r requirements.txt -q 2>&1 && uv run python -c \"from main import app; print('ok')\"\\n"
+            "   Backend: cd /workspace/app/backend && ([ -x .venv/bin/python ] || uv venv .venv) && uv pip install --python .venv/bin/python -r requirements.txt -q 2>&1 && .venv/bin/python -c \"from main import app; print('ok')\"\\n"
             "   Frontend: cd /workspace/app/frontend && pnpm run build 2>&1 | tail -5\\n"
-            "   Always install requirements before the import test.\\n"
+            "   Always install requirements with `uv pip install --python .venv/bin/python`; do not use `.venv/bin/pip`, `pip3 install`, or `python3 -m pip install`.\\n"
             "   A completion gate re-runs the backend import check after you terminate; if it fails you will be asked to fix it.\\n"
             "6. You MUST ensure ALL tasks are marked as 'completed' via `task_update` BEFORE you finish. Do NOT attempt "
             "to finish if any task is still pending or in_progress.\\n"
@@ -428,7 +495,7 @@ async def run_engineer_session(
             if tasks and not verification_ok:
                 pushback_msgs.append(
                     "- No verification command run. For backend run: "
-                    "cd /workspace/app/backend && uv run python -c \"from main import app; print('ok')\". "
+                    "cd /workspace/app/backend && ([ -x .venv/bin/python ] || uv venv .venv) && uv pip install --python .venv/bin/python -r requirements.txt -q 2>&1 && .venv/bin/python -c \"from main import app; print('ok')\". "
                     "For frontend run: pnpm run build."
                 )
 
@@ -451,6 +518,9 @@ async def run_engineer_session(
             await log_step(f"Completion gate: reached max rounds ({MAX_COMPLETION_ROUNDS}), proceeding.")
 
         await log_step("agent run completed")
+        final_summary = _extract_terminate_summary(result)
+        if final_summary:
+            await traced_event_sink({"type": "assistant", "agent": agent.name, "content": final_summary})
 
         if stop_event is not None and stop_event.is_set():
             logger.info("%s run_engineer_session stopped after agent.run", prefix)

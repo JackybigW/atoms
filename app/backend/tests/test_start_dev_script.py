@@ -34,9 +34,7 @@ def test_start_dev_passes_vite_flags_without_extra_separator(tmp_path):
     )
     fake_pnpm.chmod(0o755)
 
-    script_path = Path(
-        "/Users/jackywang/Documents/atoms/.worktrees/feature-engineer-first-realtime-workspace-streaming-impl/docker/atoms-sandbox/start-dev"
-    )
+    script_path = Path(__file__).resolve().parents[3] / "docker" / "atoms-sandbox" / "start-dev"
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{env['PATH']}"
     env["ATOMS_PROJECT_ID"] = "test-project"
@@ -63,3 +61,45 @@ def test_start_dev_passes_vite_flags_without_extra_separator(tmp_path):
         "--base",
         "/preview/test/frontend/",
     ]
+
+
+def test_start_dev_launches_placeholder_when_package_json_is_missing(tmp_path):
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    args_file = tmp_path / "python3-args.txt"
+    fake_python = bin_dir / "python3"
+    fake_python.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                'if [[ "${1:-}" == "-" ]]; then',
+                "  exit 0",
+                "fi",
+                f'printf "%s\\n" "$@" > "{args_file}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+
+    script_path = Path(__file__).resolve().parents[3] / "docker" / "atoms-sandbox" / "start-dev"
+    env = os.environ.copy()
+    env["PATH"] = f"{bin_dir}:{env['PATH']}"
+    env["ATOMS_PROJECT_ID"] = "test-project"
+    env["ATOMS_WORKSPACE_ROOT"] = str(workspace_root)
+
+    result = subprocess.run(
+        ["bash", str(script_path)],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "start-dev: launched placeholder preview" in result.stdout
+    assert "/tmp/atoms-placeholder-server.py" in _wait_for_file(args_file)

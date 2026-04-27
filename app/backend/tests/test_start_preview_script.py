@@ -88,6 +88,85 @@ def test_start_preview_delegates_cd_prefixed_pnpm_dev_to_start_dev(tmp_path):
     assert _wait_for_file(marker_file).strip() == "/preview/test/frontend/"
 
 
+def test_start_preview_delegates_missing_frontend_to_placeholder_start_dev(tmp_path):
+    workspace_root = tmp_path / "workspace"
+    frontend_root = workspace_root / "app" / "frontend"
+    frontend_root.mkdir(parents=True)
+    backend_root = workspace_root / "app" / "backend"
+    backend_root.mkdir(parents=True)
+    (backend_root / "requirements.txt").write_text("", encoding="utf-8")
+
+    atoms_dir = workspace_root / ".atoms"
+    atoms_dir.mkdir()
+    (atoms_dir / "preview.json").write_text(
+        json.dumps({
+            "frontend": {
+                "command": "cd /workspace/app/frontend && npm run preview",
+                "healthcheck_path": "/"
+            },
+            "backend": {
+                "command": "cd /workspace/app/backend && uv run uvicorn server:app --host 0.0.0.0 --port 8000",
+                "healthcheck_path": "/health"
+            }
+        }),
+        encoding="utf-8",
+    )
+
+    start_dev_marker = tmp_path / "start-dev-marker.txt"
+    backend_cmd_marker = tmp_path / "backend-cmd.txt"
+    fake_start_dev = tmp_path / "fake-start-dev.sh"
+    fake_start_dev.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                f'printf "called" > "{start_dev_marker}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    fake_start_dev.chmod(0o755)
+
+    original = START_PREVIEW_SCRIPT.read_text(encoding="utf-8")
+    patched = original.replace('WORKSPACE_ROOT="/workspace"', f'WORKSPACE_ROOT="{workspace_root}"')
+    patched = patched.replace('Path("/workspace/.atoms/preview.json")', f'Path("{workspace_root}/.atoms/preview.json")')
+    patched = patched.replace("/usr/local/bin/start-dev", str(fake_start_dev))
+    patched = patched.replace(
+        'nohup bash -lc "${BACKEND_COMMAND}" >"${BACKEND_LOG}" 2>&1 &',
+        f'printf "%s" "${{BACKEND_COMMAND}}" > "{backend_cmd_marker}"',
+    )
+    kill_fn_start = patched.index("kill_listeners_on_port() {")
+    install_fn_start = patched.index("install_node_deps_if_needed() {")
+    patched = (
+        patched[:kill_fn_start]
+        + 'kill_listeners_on_port() {\n  :\n}\n\n'
+        + patched[install_fn_start:]
+    )
+    ensure_venv_fn_start = patched.index("ensure_backend_venv() {")
+    ensure_venv_fn_end = patched.index("\n}", ensure_venv_fn_start) + 2
+    patched = (
+        patched[:ensure_venv_fn_start]
+        + 'ensure_backend_venv() {\n  :\n}\n'
+        + patched[ensure_venv_fn_end:]
+    )
+
+    fake_script = tmp_path / "start-preview-missing-frontend-test"
+    fake_script.write_text(patched, encoding="utf-8")
+    fake_script.chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", str(fake_script)],
+        capture_output=True,
+        text=True,
+        env={**os.environ},
+        check=False,
+    )
+
+    assert result.returncode == 0, f"stderr: {result.stderr}\nstdout: {result.stdout}"
+    assert _wait_for_file(start_dev_marker) == "called"
+    assert "uvicorn server:app" in _wait_for_file(backend_cmd_marker)
+
+
 def test_start_preview_normalizes_uv_run_backend_command_and_sets_backend_root(tmp_path):
     """start-preview should detect a backend root with requirements.txt and normalize uv run commands."""
     workspace_root = tmp_path / "workspace"

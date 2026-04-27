@@ -357,6 +357,106 @@ async def test_ensure_runtime_injects_project_id_env_var(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_ensure_runtime_forwards_explicit_sandbox_proxy_env(monkeypatch, tmp_path):
+    commands = []
+    workspace_root = tmp_path / "user-1" / "7"
+    workspace_root.mkdir(parents=True)
+
+    monkeypatch.setenv("ATOMS_SANDBOX_HTTP_PROXY", "http://172.17.0.1:7890")
+    monkeypatch.setenv("ATOMS_SANDBOX_HTTPS_PROXY", "http://172.17.0.1:7890")
+    monkeypatch.setenv("ATOMS_SANDBOX_ALL_PROXY", "socks5://172.17.0.1:7890")
+    monkeypatch.setenv("ATOMS_SANDBOX_NO_PROXY", "localhost,127.0.0.1,::1,0.0.0.0")
+
+    async def fake_run(*args):
+        commands.append(args)
+        return 0, "container-id-123\n", ""
+
+    service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run)
+
+    await service.ensure_runtime(
+        user_id="user-1",
+        project_id=7,
+        host_root=workspace_root,
+    )
+
+    run_command = commands[0]
+    assert "HTTP_PROXY=http://172.17.0.1:7890" in run_command
+    assert "http_proxy=http://172.17.0.1:7890" in run_command
+    assert "HTTPS_PROXY=http://172.17.0.1:7890" in run_command
+    assert "https_proxy=http://172.17.0.1:7890" in run_command
+    assert "ALL_PROXY=socks5://172.17.0.1:7890" in run_command
+    assert "all_proxy=socks5://172.17.0.1:7890" in run_command
+    assert "NO_PROXY=localhost,127.0.0.1,::1,0.0.0.0" in run_command
+    assert "no_proxy=localhost,127.0.0.1,::1,0.0.0.0" in run_command
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "install_command",
+    [
+        "uv pip install -r requirements.txt",
+        "pip install -r requirements.txt",
+        "python -m pip install -r requirements.txt",
+        "python3 -m pip install -r requirements.txt",
+        "pnpm install",
+        "npm install",
+        "yarn install",
+    ],
+)
+async def test_exec_uses_install_timeout_for_dependency_installs(
+    monkeypatch, tmp_path, install_command
+):
+    observed_timeout = None
+
+    async def fake_wait_for(coro, timeout):
+        nonlocal observed_timeout
+        observed_timeout = timeout
+        return await coro
+
+    async def fake_run(*args):
+        return 0, "ok", ""
+
+    monkeypatch.setattr(sandbox_runtime_module.asyncio, "wait_for", fake_wait_for)
+
+    service = SandboxRuntimeService(
+        project_root=tmp_path,
+        run_command=fake_run,
+        exec_timeout_seconds=180.0,
+        install_timeout_seconds=600.0,
+    )
+
+    await service.exec("atoms-user-1-42", f"cd /workspace/app/backend && {install_command}")
+
+    assert observed_timeout == 600.0
+
+
+@pytest.mark.asyncio
+async def test_exec_keeps_default_timeout_for_non_install_commands(monkeypatch, tmp_path):
+    observed_timeout = None
+
+    async def fake_wait_for(coro, timeout):
+        nonlocal observed_timeout
+        observed_timeout = timeout
+        return await coro
+
+    async def fake_run(*args):
+        return 0, "ok", ""
+
+    monkeypatch.setattr(sandbox_runtime_module.asyncio, "wait_for", fake_wait_for)
+
+    service = SandboxRuntimeService(
+        project_root=tmp_path,
+        run_command=fake_run,
+        exec_timeout_seconds=180.0,
+        install_timeout_seconds=600.0,
+    )
+
+    await service.exec("atoms-user-1-42", "cd /workspace/app/backend && python -c 'print(1)'")
+
+    assert observed_timeout == 180.0
+
+
+@pytest.mark.asyncio
 async def test_ensure_runtime_raises_when_docker_run_fails(tmp_path):
     workspace_root = tmp_path / "user-123" / "42"
     workspace_root.mkdir(parents=True)
@@ -408,6 +508,125 @@ async def test_ensure_runtime_reuses_existing_container_name(tmp_path):
 
     assert container_name == "atoms-user-123-42"
     assert commands[-1] == ("docker", "start", "atoms-user-123-42")
+
+
+@pytest.mark.asyncio
+async def test_ensure_runtime_recreates_existing_container_with_stale_proxy_env(monkeypatch, tmp_path):
+    commands = []
+    workspace_root = tmp_path / "user-123" / "42"
+    workspace_root.mkdir(parents=True)
+    monkeypatch.setenv("ATOMS_SANDBOX_HTTP_PROXY", "http://new-user:new-pass@proxy.local:8080")
+
+    async def fake_run(*args):
+        commands.append(args)
+        if args[:4] == ("docker", "run", "-d", "--name"):
+            if sum(1 for cmd in commands if cmd[:4] == ("docker", "run", "-d", "--name")) == 1:
+                return 125, "", 'Conflict. The container name "/atoms-user-123-42" is already in use.'
+            return 0, "container-id-123\n", ""
+        if args == ("docker", "inspect", "atoms-user-123-42"):
+            return (
+                0,
+                '[{"Image":"sha256:expected","Config":{"Image":"atoms-sandbox:latest","WorkingDir":"/workspace","Cmd":["sleep","infinity"],"Env":["ATOMS_PROJECT_ID=42","HTTP_PROXY=http://old-user:old-pass@proxy.local:8080","http_proxy=http://old-user:old-pass@proxy.local:8080"]},"HostConfig":{"PortBindings":{"3000/tcp":[{"HostPort":"49153"}],"8000/tcp":[{"HostPort":"49154"}]}},"Mounts":[{"Destination":"/workspace","Source":"'
+                + str(workspace_root)
+                + '"}]}]',
+                "",
+            )
+        if args == ("docker", "image", "inspect", "atoms-sandbox:latest"):
+            return 0, '[{"Id":"sha256:expected"}]', ""
+        if args == ("docker", "rm", "-f", "atoms-user-123-42"):
+            return 0, "atoms-user-123-42\n", ""
+        raise AssertionError(f"unexpected command: {args}")
+
+    service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run)
+
+    container_name = await service.ensure_runtime(
+        user_id="user-123",
+        project_id=42,
+        host_root=workspace_root,
+    )
+
+    assert container_name == "atoms-user-123-42"
+    assert ("docker", "rm", "-f", "atoms-user-123-42") in commands
+    assert ("docker", "start", "atoms-user-123-42") not in commands
+
+
+@pytest.mark.asyncio
+async def test_ensure_runtime_recreates_existing_container_when_proxy_env_removed(tmp_path):
+    commands = []
+    workspace_root = tmp_path / "user-123" / "42"
+    workspace_root.mkdir(parents=True)
+
+    async def fake_run(*args):
+        commands.append(args)
+        if args[:4] == ("docker", "run", "-d", "--name"):
+            if sum(1 for cmd in commands if cmd[:4] == ("docker", "run", "-d", "--name")) == 1:
+                return 125, "", 'Conflict. The container name "/atoms-user-123-42" is already in use.'
+            return 0, "container-id-123\n", ""
+        if args == ("docker", "inspect", "atoms-user-123-42"):
+            return (
+                0,
+                '[{"Image":"sha256:expected","Config":{"Image":"atoms-sandbox:latest","WorkingDir":"/workspace","Cmd":["sleep","infinity"],"Env":["ATOMS_PROJECT_ID=42","HTTP_PROXY=http://old.proxy:8080","http_proxy=http://old.proxy:8080"]},"HostConfig":{"PortBindings":{"3000/tcp":[{"HostPort":"49153"}],"8000/tcp":[{"HostPort":"49154"}]}},"Mounts":[{"Destination":"/workspace","Source":"'
+                + str(workspace_root)
+                + '"}]}]',
+                "",
+            )
+        if args == ("docker", "image", "inspect", "atoms-sandbox:latest"):
+            return 0, '[{"Id":"sha256:expected"}]', ""
+        if args == ("docker", "rm", "-f", "atoms-user-123-42"):
+            return 0, "atoms-user-123-42\n", ""
+        raise AssertionError(f"unexpected command: {args}")
+
+    service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run)
+
+    container_name = await service.ensure_runtime(
+        user_id="user-123",
+        project_id=42,
+        host_root=workspace_root,
+    )
+
+    assert container_name == "atoms-user-123-42"
+    assert ("docker", "rm", "-f", "atoms-user-123-42") in commands
+    assert ("docker", "start", "atoms-user-123-42") not in commands
+
+
+@pytest.mark.asyncio
+async def test_ensure_runtime_recreates_existing_container_when_https_proxy_env_removed(monkeypatch, tmp_path):
+    commands = []
+    workspace_root = tmp_path / "user-123" / "42"
+    workspace_root.mkdir(parents=True)
+    monkeypatch.setenv("ATOMS_SANDBOX_HTTP_PROXY", "http://current.proxy:8080")
+
+    async def fake_run(*args):
+        commands.append(args)
+        if args[:4] == ("docker", "run", "-d", "--name"):
+            if sum(1 for cmd in commands if cmd[:4] == ("docker", "run", "-d", "--name")) == 1:
+                return 125, "", 'Conflict. The container name "/atoms-user-123-42" is already in use.'
+            return 0, "container-id-123\n", ""
+        if args == ("docker", "inspect", "atoms-user-123-42"):
+            return (
+                0,
+                '[{"Image":"sha256:expected","Config":{"Image":"atoms-sandbox:latest","WorkingDir":"/workspace","Cmd":["sleep","infinity"],"Env":["ATOMS_PROJECT_ID=42","HTTP_PROXY=http://current.proxy:8080","http_proxy=http://current.proxy:8080","HTTPS_PROXY=http://old.proxy:8080","https_proxy=http://old.proxy:8080"]},"HostConfig":{"PortBindings":{"3000/tcp":[{"HostPort":"49153"}],"8000/tcp":[{"HostPort":"49154"}]}},"Mounts":[{"Destination":"/workspace","Source":"'
+                + str(workspace_root)
+                + '"}]}]',
+                "",
+            )
+        if args == ("docker", "image", "inspect", "atoms-sandbox:latest"):
+            return 0, '[{"Id":"sha256:expected"}]', ""
+        if args == ("docker", "rm", "-f", "atoms-user-123-42"):
+            return 0, "atoms-user-123-42\n", ""
+        raise AssertionError(f"unexpected command: {args}")
+
+    service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run)
+
+    container_name = await service.ensure_runtime(
+        user_id="user-123",
+        project_id=42,
+        host_root=workspace_root,
+    )
+
+    assert container_name == "atoms-user-123-42"
+    assert ("docker", "rm", "-f", "atoms-user-123-42") in commands
+    assert ("docker", "start", "atoms-user-123-42") not in commands
 
 
 @pytest.mark.asyncio
@@ -598,6 +817,40 @@ async def test_ensure_runtime_times_out_stuck_docker_call(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_ensure_runtime_redacts_proxy_env_in_timeout_error(monkeypatch, tmp_path):
+    workspace_root = tmp_path / "user-123" / "42"
+    workspace_root.mkdir(parents=True)
+    monkeypatch.setenv("ATOMS_SANDBOX_HTTP_PROXY", "http://user:pass@proxy.local:8080")
+    monkeypatch.setenv("ATOMS_SANDBOX_NO_PROXY", "localhost,secret.internal")
+
+    async def fake_run(*args):
+        await asyncio.sleep(0.05)
+        return 0, "container-id-123\n", ""
+
+    service = SandboxRuntimeService(
+        project_root=tmp_path,
+        run_command=fake_run,
+        command_timeout_seconds=0.01,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await service.ensure_runtime(
+            user_id="user-123",
+            project_id=42,
+            host_root=workspace_root,
+        )
+
+    message = str(exc_info.value)
+    assert "HTTP_PROXY=<redacted>" in message
+    assert "http_proxy=<redacted>" in message
+    assert "NO_PROXY=<redacted>" in message
+    assert "no_proxy=<redacted>" in message
+    assert "user:pass" not in message
+    assert "http://user:pass@proxy.local:8080" not in message
+    assert "localhost,secret.internal" not in message
+
+
+@pytest.mark.asyncio
 async def test_run_command_kills_process_after_timeout(tmp_path):
     marker = tmp_path / "timeout-marker.txt"
     service = SandboxRuntimeService(
@@ -618,6 +871,39 @@ async def test_run_command_kills_process_after_timeout(tmp_path):
 
     await asyncio.sleep(0.25)
     assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_exec_redacts_proxy_env_in_timeout_error(tmp_path):
+    async def fake_run(*args):
+        await asyncio.sleep(0.05)
+        return 0, "ok", ""
+
+    service = SandboxRuntimeService(
+        project_root=tmp_path,
+        run_command=fake_run,
+        exec_timeout_seconds=0.01,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await service.exec(
+            "atoms-user-123-42",
+            "npm test",
+            env={
+                "HTTPS_PROXY": "http://user:pass@proxy.local:8080",
+                "ALL_PROXY": "socks5://user:pass@proxy.local:1080",
+                "no_proxy": "localhost,secret.internal",
+            },
+        )
+
+    message = str(exc_info.value)
+    assert "HTTPS_PROXY=<redacted>" in message
+    assert "ALL_PROXY=<redacted>" in message
+    assert "no_proxy=<redacted>" in message
+    assert "user:pass" not in message
+    assert "http://user:pass@proxy.local:8080" not in message
+    assert "socks5://user:pass@proxy.local:1080" not in message
+    assert "localhost,secret.internal" not in message
 
 
 @pytest.mark.asyncio

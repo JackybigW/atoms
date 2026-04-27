@@ -13,6 +13,8 @@ RUN apt-get update \
         ca-certificates \
         curl \
         git \
+        libzbar0 \
+        pkg-config \
         procps \
         python3 \
         python3-pip \
@@ -20,6 +22,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && corepack prepare pnpm@9.12.0 --activate
+RUN pnpm config set store-dir /root/.local/share/pnpm/store
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
     cp /root/.local/bin/uv /usr/local/bin/uv && \
     cp /root/.local/bin/uvx /usr/local/bin/uvx
@@ -33,12 +36,17 @@ RUN uv pip install --system --break-system-packages \
     pydantic \
     httpx \
     python-multipart \
+    pillow \
+    "qrcode[pil]" \
+    pyzbar \
     sqlalchemy \
     aiofiles
 
 # Use Tsinghua PyPI mirror at runtime so agent pip installs are fast from China.
 # This ENV is set AFTER the RUN above so the image build itself uses pypi.org.
-ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ENV UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    UV_CACHE_DIR=/root/.cache/uv \
+    PNPM_STORE_DIR=/root/.local/share/pnpm/store
 
 COPY start-dev /usr/local/bin/start-dev
 COPY start-preview /usr/local/bin/start-preview
