@@ -41,3 +41,25 @@ def test_agent_run_log_store_overwrites_previous_latest_run(tmp_path: Path):
     assert latest["run_id"] == second.run_id
     assert latest["status"] == "running"
     assert [entry["content"] for entry in latest["entries"]] == ["$ [system] second run"]
+
+
+def test_agent_run_log_store_records_metrics(tmp_path):
+    store = AgentRunLogStore(base_root=tmp_path)
+    recorder = store.start_run(user_id="user-1", project_id=42)
+
+    recorder.metric_event("dependency_cache.hit", category="dependency", attrs={"scope": "backend"})
+    recorder.metric_summary({"duration_ms": 123, "events": {"dependency_cache.hit": 1}})
+
+    run = store.read_latest_run(user_id="user-1", project_id=42)
+
+    assert run["metrics"] == [
+        {
+            "run_id": recorder.run_id,
+            "seq": 1,
+            "type": "event",
+            "name": "dependency_cache.hit",
+            "category": "dependency",
+            "attrs": {"scope": "backend"},
+        }
+    ]
+    assert run["metrics_summary"] == {"duration_ms": 123, "events": {"dependency_cache.hit": 1}}

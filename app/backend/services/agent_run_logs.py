@@ -20,6 +20,7 @@ class AgentRunRecorder:
     project_id: int
     run_id: str
     sequence: int = 0
+    metric_sequence: int = 0
 
     def _append(self, *, kind: RunLogKind, content: str) -> None:
         self.sequence += 1
@@ -43,6 +44,29 @@ class AgentRunRecorder:
 
     def error(self, content: str) -> None:
         self._append(kind="error", content=f"! {content}")
+
+    def metric_event(self, name: str, *, category: str, attrs: dict[str, object] | None = None) -> None:
+        self.metric_sequence += 1
+        self.store.append_metric(
+            user_id=self.user_id,
+            project_id=self.project_id,
+            run_id=self.run_id,
+            sequence=self.metric_sequence,
+            payload={
+                "type": "event",
+                "name": name,
+                "category": category,
+                "attrs": attrs or {},
+            },
+        )
+
+    def metric_summary(self, summary: dict[str, object]) -> None:
+        self.store.write_manifest(
+            user_id=self.user_id,
+            project_id=self.project_id,
+            payload={"metrics_summary": summary},
+            merge=True,
+        )
 
     def set_status(self, status: str) -> None:
         now = _utc_now_iso()
@@ -72,6 +96,9 @@ class AgentRunLogStore:
     def _entries_path(self, *, user_id: str, project_id: int) -> Path:
         return self._run_dir(user_id=user_id, project_id=project_id) / "latest.jsonl"
 
+    def _metrics_path(self, *, user_id: str, project_id: int) -> Path:
+        return self._run_dir(user_id=user_id, project_id=project_id) / "latest_metrics.jsonl"
+
     def start_run(self, *, user_id: str, project_id: int) -> AgentRunRecorder:
         run_dir = self._run_dir(user_id=user_id, project_id=project_id)
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -88,6 +115,7 @@ class AgentRunLogStore:
             merge=False,
         )
         self._entries_path(user_id=user_id, project_id=project_id).write_text("", encoding="utf-8")
+        self._metrics_path(user_id=user_id, project_id=project_id).write_text("", encoding="utf-8")
         return AgentRunRecorder(
             store=self,
             user_id=user_id,
@@ -129,9 +157,29 @@ class AgentRunLogStore:
         with entries_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+    def append_metric(
+        self,
+        *,
+        user_id: str,
+        project_id: int,
+        run_id: str,
+        sequence: int,
+        payload: dict[str, object],
+    ) -> None:
+        metric = {
+            "run_id": run_id,
+            "seq": sequence,
+            **payload,
+        }
+        metrics_path = self._metrics_path(user_id=user_id, project_id=project_id)
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        with metrics_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(metric, ensure_ascii=False) + "\n")
+
     def read_latest_run(self, *, user_id: str, project_id: int) -> dict[str, object] | None:
         manifest_path = self._manifest_path(user_id=user_id, project_id=project_id)
         entries_path = self._entries_path(user_id=user_id, project_id=project_id)
+        metrics_path = self._metrics_path(user_id=user_id, project_id=project_id)
         if not manifest_path.exists():
             return None
 
@@ -150,10 +198,22 @@ class AgentRunLogStore:
                 except json.JSONDecodeError:
                     continue
 
+        metrics: list[dict[str, object]] = []
+        if metrics_path.exists():
+            for raw_line in metrics_path.read_text(encoding="utf-8").splitlines():
+                if not raw_line.strip():
+                    continue
+                try:
+                    metrics.append(json.loads(raw_line))
+                except json.JSONDecodeError:
+                    continue
+
         return {
             "run_id": manifest.get("run_id"),
             "status": manifest.get("status", "unknown"),
             "started_at": manifest.get("started_at"),
             "updated_at": manifest.get("updated_at"),
             "entries": entries,
+            "metrics": metrics,
+            "metrics_summary": manifest.get("metrics_summary"),
         }
