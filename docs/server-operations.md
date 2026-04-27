@@ -23,6 +23,19 @@ Generate `/etc/clash/config.yaml` from that subscription before restarting
 Clash. Keep the `Auto` url-test group enabled so the server can choose a
 working node automatically.
 
+Atoms production constrains Clash outbound traffic to non-direct Singapore,
+Japan, Taiwan, United States, and Korea nodes. Apply the policy after updating
+the subscription config:
+
+```bash
+cd /home/ubuntu/atoms
+bash scripts/configure-server-clash-policy.sh
+```
+
+The policy removes Hong Kong, direct, metadata, and unrelated region nodes from
+the active config. `Auto` uses `url-test` with a `500ms` tolerance so it does not
+switch nodes for small latency changes.
+
 Do not run `xray` or `v2ray` alongside Clash on this server. They were removed
 to avoid competing proxy ports and unstable Docker/Git outbound behavior.
 

@@ -5,19 +5,20 @@
 #
 # 做什么：
 #   1. 把本地改动 commit 并 push 到 GitHub
-#   2. 用 rsync 从本地直接推文件到服务器（不依赖服务器访问 GitHub，因为服务器网络慢）
-#   3. 在服务器上重建前端静态文件、重启后端服务
+#   2. 用 rsync 从本地直接推文件到服务器，再把服务器 git 指到 GitHub 同一 commit
+#   3. 应用服务器 Clash 出站策略
+#   4. 在服务器上重建前端静态文件、重启后端服务
 #
 # 背景/踩坑记录：
 #   - 服务器是 OpenCloudOS (RHEL)，用 dnf 不是 apt
-#   - 服务器不能稳定访问 GitHub，所以不用 git pull，改用本地 rsync 推送
+#   - 服务器不能稳定访问 GitHub，所以文件同步仍用 rsync；git 只 fetch 已推送的 commit 元数据
 #   - .env 文件含密钥，不进 git / 不被 rsync 覆盖（服务器有独立的 .env）
 #   - nginx 要用 $http_host 而不是 $host，才能保留端口号给 Auth0 回调 URL
 #   - Auth0 token 端点是 /oauth/token（不是 /token），logout 是 /v2/logout
 #   - PostgreSQL 连接串里的 @ 需要 URL encode 成 %40
 #   - systemd EnvironmentFile 里含空格的值必须加引号（如 OIDC_SCOPE="openid email profile"）
 #   - vite build 不支持 --silent 参数，用 2>&1 | tail -3 代替
-#   - 服务器 git commit hash 和 GitHub/本地不同（rsync 部署的副作用），但文件内容一致
+#   - 服务器 git 必须 reset 到 GitHub main 的同一 commit，避免三端 hash 漂移
 # =============================================================================
 
 set -e  # 任意命令失败立即退出
@@ -73,9 +74,10 @@ fi
 git push origin main
 ok "GitHub 推送成功 → $GITHUB_REPO"
 echo "    最新 commit: $(git log --oneline -1)"
+LOCAL_COMMIT="$(git rev-parse HEAD)"
 
 # =============================================================================
-# 第二步：rsync 同步文件到服务器
+# 第二步：rsync 同步文件到服务器，并对齐服务器 git commit
 #
 # 为什么用 rsync 而不是 git pull：
 #   服务器访问 GitHub 速度不稳定，rsync 走 SSH 走本地网络，快且可靠
@@ -105,25 +107,31 @@ rsync -az --delete \
 
 ok "文件同步完成"
 
-# 在服务器上做一个 git commit 记录本次部署
-# 注意：这个 commit hash 和 GitHub/本地不同（因为是独立 commit），但文件内容一致
 ssh "$SERVER" "
   git config --global user.email 'jackywang@atoms.dev' 2>/dev/null
   git config --global user.name 'Jacky Wang' 2>/dev/null
   git config --global --add safe.directory $SERVER_PATH 2>/dev/null
   cd $SERVER_PATH
-  git add -A 2>/dev/null
-  git commit -m '$COMMIT_MSG' --allow-empty -q 2>/dev/null || true
+  http_proxy=http://127.0.0.1:7890 https_proxy=http://127.0.0.1:7890 git fetch origin main
+  git reset --hard '$LOCAL_COMMIT'
 "
-ok "服务器 git 已记录（hash 与 GitHub 不同属正常，文件内容一致）"
+ok "服务器 git 已对齐到 GitHub commit: $LOCAL_COMMIT"
 
 # =============================================================================
-# 第三步：服务器重建前端 + 重启后端
+# 第三步：应用服务器 Clash 出站策略
+# =============================================================================
+log "[3/4] 应用服务器 Clash 出站策略..."
+
+ssh "$SERVER" "cd $SERVER_PATH && bash scripts/configure-server-clash-policy.sh"
+ok "Clash 出站策略已应用"
+
+# =============================================================================
+# 第四步：服务器重建前端 + 重启后端
 #
 # 前端：pnpm run build 把 React/TS 编译成静态文件到 dist/，由 nginx 直接提供
 # 后端：systemctl restart 重启 FastAPI uvicorn 进程，让新代码生效
 # =============================================================================
-log "[3/3] 服务器重建前端 + 重启后端..."
+log "[4/4] 服务器重建前端 + 重启后端..."
 
 ssh "$SERVER" bash << 'REMOTE'
   set -e
