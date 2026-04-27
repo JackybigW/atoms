@@ -190,10 +190,14 @@ export VITE_ATOMS_PREVIEW_FRONTEND_BASE="${VITE_ATOMS_PREVIEW_FRONTEND_BASE:-${A
 export VITE_ATOMS_PREVIEW_BACKEND_BASE="${VITE_ATOMS_PREVIEW_BACKEND_BASE:-${ATOMS_PREVIEW_BACKEND_BASE}}"
 
 FRONTEND_ROOT="$(resolve_frontend_root "${WORKSPACE_ROOT}")"
+FRONTEND_HAS_PACKAGE_JSON=0
+if [[ -f "${FRONTEND_ROOT}/package.json" ]]; then
+  FRONTEND_HAS_PACKAGE_JSON=1
+fi
 
 install_node_deps_if_needed
 
-if is_standard_pnpm_dev_command "${FRONTEND_COMMAND}"; then
+if is_standard_pnpm_dev_command "${FRONTEND_COMMAND}" || [[ "${FRONTEND_HAS_PACKAGE_JSON}" -eq 0 ]]; then
   /usr/local/bin/start-dev >"${FRONTEND_LOG}" 2>&1
 else
   kill_listeners_on_port 3000
