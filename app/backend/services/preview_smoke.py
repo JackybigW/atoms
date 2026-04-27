@@ -192,7 +192,7 @@ class PreviewSmokeRunner:
             return SmokeResult(ok=True, failures=[])
         try:
             openapi = json.loads(body.decode("utf-8"))
-        except json.JSONDecodeError:
+        except (UnicodeDecodeError, json.JSONDecodeError):
             return SmokeResult(ok=True, failures=[])
 
         if not smoke_contract_required(openapi):
