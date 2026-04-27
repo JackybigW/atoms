@@ -195,7 +195,12 @@ class SandboxRuntimeService:
         runtime_env = set(runtime_identity.get("env", []))
         has_matching_project_env = f"ATOMS_PROJECT_ID={project_id}" in runtime_env
         expected_proxy_env = set(self._sandbox_env_assignments())
-        has_matching_proxy_env = expected_proxy_env.issubset(runtime_env)
+        actual_proxy_env = {
+            assignment
+            for assignment in runtime_env
+            if assignment.partition("=")[0] in _SANDBOX_PROXY_ENV_KEYS
+        }
+        has_matching_proxy_env = actual_proxy_env == expected_proxy_env
         return (
             workspace_source == str(resolved_host_root)
             and image_id == expected_image_id

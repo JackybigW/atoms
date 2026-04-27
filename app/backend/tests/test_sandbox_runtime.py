@@ -551,6 +551,85 @@ async def test_ensure_runtime_recreates_existing_container_with_stale_proxy_env(
 
 
 @pytest.mark.asyncio
+async def test_ensure_runtime_recreates_existing_container_when_proxy_env_removed(tmp_path):
+    commands = []
+    workspace_root = tmp_path / "user-123" / "42"
+    workspace_root.mkdir(parents=True)
+
+    async def fake_run(*args):
+        commands.append(args)
+        if args[:4] == ("docker", "run", "-d", "--name"):
+            if sum(1 for cmd in commands if cmd[:4] == ("docker", "run", "-d", "--name")) == 1:
+                return 125, "", 'Conflict. The container name "/atoms-user-123-42" is already in use.'
+            return 0, "container-id-123\n", ""
+        if args == ("docker", "inspect", "atoms-user-123-42"):
+            return (
+                0,
+                '[{"Image":"sha256:expected","Config":{"Image":"atoms-sandbox:latest","WorkingDir":"/workspace","Cmd":["sleep","infinity"],"Env":["ATOMS_PROJECT_ID=42","HTTP_PROXY=http://old.proxy:8080","http_proxy=http://old.proxy:8080"]},"HostConfig":{"PortBindings":{"3000/tcp":[{"HostPort":"49153"}],"8000/tcp":[{"HostPort":"49154"}]}},"Mounts":[{"Destination":"/workspace","Source":"'
+                + str(workspace_root)
+                + '"}]}]',
+                "",
+            )
+        if args == ("docker", "image", "inspect", "atoms-sandbox:latest"):
+            return 0, '[{"Id":"sha256:expected"}]', ""
+        if args == ("docker", "rm", "-f", "atoms-user-123-42"):
+            return 0, "atoms-user-123-42\n", ""
+        raise AssertionError(f"unexpected command: {args}")
+
+    service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run)
+
+    container_name = await service.ensure_runtime(
+        user_id="user-123",
+        project_id=42,
+        host_root=workspace_root,
+    )
+
+    assert container_name == "atoms-user-123-42"
+    assert ("docker", "rm", "-f", "atoms-user-123-42") in commands
+    assert ("docker", "start", "atoms-user-123-42") not in commands
+
+
+@pytest.mark.asyncio
+async def test_ensure_runtime_recreates_existing_container_when_https_proxy_env_removed(monkeypatch, tmp_path):
+    commands = []
+    workspace_root = tmp_path / "user-123" / "42"
+    workspace_root.mkdir(parents=True)
+    monkeypatch.setenv("ATOMS_SANDBOX_HTTP_PROXY", "http://current.proxy:8080")
+
+    async def fake_run(*args):
+        commands.append(args)
+        if args[:4] == ("docker", "run", "-d", "--name"):
+            if sum(1 for cmd in commands if cmd[:4] == ("docker", "run", "-d", "--name")) == 1:
+                return 125, "", 'Conflict. The container name "/atoms-user-123-42" is already in use.'
+            return 0, "container-id-123\n", ""
+        if args == ("docker", "inspect", "atoms-user-123-42"):
+            return (
+                0,
+                '[{"Image":"sha256:expected","Config":{"Image":"atoms-sandbox:latest","WorkingDir":"/workspace","Cmd":["sleep","infinity"],"Env":["ATOMS_PROJECT_ID=42","HTTP_PROXY=http://current.proxy:8080","http_proxy=http://current.proxy:8080","HTTPS_PROXY=http://old.proxy:8080","https_proxy=http://old.proxy:8080"]},"HostConfig":{"PortBindings":{"3000/tcp":[{"HostPort":"49153"}],"8000/tcp":[{"HostPort":"49154"}]}},"Mounts":[{"Destination":"/workspace","Source":"'
+                + str(workspace_root)
+                + '"}]}]',
+                "",
+            )
+        if args == ("docker", "image", "inspect", "atoms-sandbox:latest"):
+            return 0, '[{"Id":"sha256:expected"}]', ""
+        if args == ("docker", "rm", "-f", "atoms-user-123-42"):
+            return 0, "atoms-user-123-42\n", ""
+        raise AssertionError(f"unexpected command: {args}")
+
+    service = SandboxRuntimeService(project_root=tmp_path, run_command=fake_run)
+
+    container_name = await service.ensure_runtime(
+        user_id="user-123",
+        project_id=42,
+        host_root=workspace_root,
+    )
+
+    assert container_name == "atoms-user-123-42"
+    assert ("docker", "rm", "-f", "atoms-user-123-42") in commands
+    assert ("docker", "start", "atoms-user-123-42") not in commands
+
+
+@pytest.mark.asyncio
 async def test_ensure_runtime_reuses_existing_container_with_var_path_alias(tmp_path):
     commands = []
     workspace_root = tmp_path / "user-123" / "42"
