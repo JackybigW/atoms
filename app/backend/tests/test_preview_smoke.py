@@ -171,6 +171,19 @@ async def test_preview_smoke_runner_ignores_invalid_utf8_openapi_response(tmp_pa
     assert result.failures == []
 
 
+@pytest.mark.asyncio
+async def test_preview_smoke_runner_ignores_invalid_json_openapi_response(tmp_path):
+    class Sandbox:
+        async def smoke_request(self, container_name, *, service, method, path, headers=None, json_body=None):
+            assert path == "/openapi.json"
+            return 200, {"content-type": "application/json"}, b"not json"
+
+    result = await PreviewSmokeRunner(Sandbox()).require_contract_if_needed("container-1", tmp_path)
+
+    assert result.ok is True
+    assert result.failures == []
+
+
 def test_load_smoke_contract_rejects_non_list_checks(tmp_path):
     write_smoke_contract(tmp_path, {"version": 1, "checks": {"name": "health"}})
 
