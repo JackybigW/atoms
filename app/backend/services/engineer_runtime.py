@@ -68,6 +68,7 @@ def _remove_invalid_tool_call_messages(agent: Any) -> int:
 
     for message in messages:
         tool_calls = getattr(message, "tool_calls", None) or []
+        message_tool_call_ids = {str(getattr(tool_call, "id", "")) for tool_call in tool_calls}
         invalid_tool_names: list[str] = []
 
         for tool_call in tool_calls:
@@ -80,6 +81,7 @@ def _remove_invalid_tool_call_messages(agent: Any) -> int:
                 invalid_tool_names.append(str(getattr(function, "name", "unknown")))
 
         if invalid_tool_names:
+            invalid_tool_call_ids.update(message_tool_call_ids)
             sanitized.append(
                 Message.assistant_message(
                     (

@@ -872,6 +872,118 @@ async def test_engineer_runtime_feeds_tool_json_error_back_to_same_agent(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_engineer_runtime_removes_all_tool_results_from_mixed_tool_json_error(monkeypatch):
+    events = []
+
+    async def fake_event_sink(event):
+        events.append(event)
+
+    fake_files_service = MagicMock()
+    fake_files_service.get_list = AsyncMock(return_value={"items": []})
+    monkeypatch.setattr("services.project_files.Project_filesService", lambda db: fake_files_service)
+
+    fake_messages_service = MagicMock()
+    fake_messages_service.get_list = AsyncMock(return_value={"items": []})
+    monkeypatch.setattr("services.messages.MessagesService", lambda db: fake_messages_service)
+
+    fake_sessions_service = MagicMock()
+    fake_sessions_service.get_by_project = AsyncMock(return_value=None)
+    fake_session_record = MagicMock()
+    fake_session_record.preview_session_key = "123"
+    fake_session_record.preview_expires_at = None
+    fake_session_record.frontend_status = "running"
+    fake_session_record.backend_status = "not_configured"
+    fake_sessions_service.create = AsyncMock(return_value=fake_session_record)
+
+    class FakeGate:
+        approved_request_key = "req_123"
+
+        def check_write(self, path):
+            pass
+
+    monkeypatch.setattr("services.approval_gate.ApprovalGate", lambda *args, **kwargs: FakeGate())
+
+    class FakeBashSession:
+        def has_verification_run(self):
+            return True
+
+    monkeypatch.setattr("services.engineer_runtime.ContainerBashSession", lambda *args, **kwargs: FakeBashSession())
+
+    class MixedToolJsonErrorAgent(FakeAgent):
+        def __init__(self):
+            super().__init__()
+            self.messages = []
+
+        async def run(self, prompt):
+            self.run_calls += 1
+            self.prompts.append(prompt)
+            if self.run_calls == 1:
+                good_call = ToolCall(
+                    id="call_good",
+                    function=Function(name="str_replace_editor", arguments='{"command":"create","path":"/tmp/a"}'),
+                )
+                bad_call = ToolCall(
+                    id="call_bad",
+                    function=Function(name="str_replace_editor", arguments='{"command": "create", "path":'),
+                )
+                self.messages.append(Message.from_tool_calls(content="", tool_calls=[good_call, bad_call]))
+                self.messages.append(
+                    Message.tool_message(
+                        content="File created successfully",
+                        name="str_replace_editor",
+                        tool_call_id="call_good",
+                    )
+                )
+                self.messages.append(
+                    Message.tool_message(
+                        content="Error: Error parsing arguments for str_replace_editor: Invalid JSON format",
+                        name="str_replace_editor",
+                        tool_call_id="call_bad",
+                    )
+                )
+                raise Exception(
+                    "Error code: 400 - invalid params, invalid function arguments json string, "
+                    "tool_call_id: call_bad"
+                )
+            return "The interaction has been completed with status: success\nSummary: recovered"
+
+    agent = MixedToolJsonErrorAgent()
+
+    class FakeAgentCls:
+        @staticmethod
+        def build_for_workspace(*args, **kwargs):
+            return agent
+
+    result = await run_engineer_session(
+        db=FakeDB(),
+        user_id="user-1",
+        project_id=42,
+        prompt="build something",
+        model="fake-model",
+        event_sink=fake_event_sink,
+        workspace_service_factory=lambda: FakeWorkspaceService(),
+        sandbox_service_factory=lambda: FakeSandboxService(),
+        agent_cls=FakeAgentCls,
+        llm_builder=lambda model: None,
+        workspace_runtime_sessions_service_cls=lambda db: fake_sessions_service,
+        preview_session_fields_factory=lambda: {"preview_session_key": "123"},
+        preview_url_builder=lambda key: {
+            "preview_frontend_url": "http://front",
+            "preview_backend_url": "http://back",
+        },
+        preview_contract_loader=lambda p: None,
+    )
+
+    assert result is True
+    assert agent.run_calls == 2
+    assert not any(
+        getattr(message, "role", None) == "tool"
+        and getattr(message, "tool_call_id", None) in {"call_good", "call_bad"}
+        for message in agent.messages
+    )
+
+
+@pytest.mark.asyncio
 async def test_engineer_runtime_writes_metrics_summary(monkeypatch, tmp_path):
     events = []
 
