@@ -11,171 +11,6 @@ from openmanus_runtime.streaming import StreamingSWEAgent
 
 from routers.agent_runtime import _serialize_agent_history, router
 from schemas.auth import UserResponse
-from unittest.mock import AsyncMock, patch
-
-from services.agent_bootstrap import (
-    BootstrapContext,
-    _ClassificationResult,
-    build_bootstrap_context,
-    classify_user_request,
-    classify_user_request_async,
-)
-
-
-def test_classify_user_request_flags_implementation_mode():
-    result = classify_user_request("帮我新增一个 billing 页面和后端接口")
-    assert result.mode == "implementation"
-    assert result.requires_backend_readme is True
-
-
-def test_classify_user_request_leaves_smalltalk_in_conversation_mode():
-    result = classify_user_request("你好")
-    assert result.mode == "conversation"
-    assert result.requires_draft_plan is False
-
-
-def test_classify_user_request_ignores_ai_substring_in_unrelated_words():
-    result = classify_user_request("please maintain the homepage copy")
-    assert result.mode == "conversation"
-    assert result.requires_backend_readme is False
-
-
-def test_classify_user_request_ignores_email_in_general_requests():
-    result = classify_user_request("please email me the notes")
-    assert result.mode == "conversation"
-    assert result.requires_backend_readme is False
-
-
-def test_classify_user_request_ignores_reviewing_landing_page_copy():
-    result = classify_user_request("review the landing page copy")
-    assert result.mode == "conversation"
-    assert result.requires_backend_readme is False
-
-
-def test_classify_user_request_ignores_frontend_widget_behavior_questions():
-    result = classify_user_request("how should the frontend widget behave?")
-    assert result.mode == "conversation"
-    assert result.requires_backend_readme is False
-
-
-def test_classify_user_request_marks_frontend_landing_page_as_implementation_only():
-    result = classify_user_request("build a landing page")
-    assert result.mode == "implementation"
-    assert result.requires_backend_readme is False
-
-
-def test_classify_user_request_marks_frontend_widget_as_implementation_only():
-    result = classify_user_request("implement the frontend widget")
-    assert result.mode == "implementation"
-    assert result.requires_backend_readme is False
-
-
-def test_classify_user_request_marks_add_auth_as_implementation_and_backend():
-    result = classify_user_request("please add auth")
-    assert result.mode == "implementation"
-    assert result.requires_backend_readme is True
-
-
-def test_classify_user_request_treats_question_form_add_auth_as_conversation():
-    result = classify_user_request("how do I add auth?")
-    assert result.mode == "conversation"
-    assert result.requires_backend_readme is True
-
-
-def test_classify_user_request_treats_question_form_update_api_client_as_conversation():
-    result = classify_user_request("what is the best way to update the API client?")
-    assert result.mode == "conversation"
-    assert result.requires_backend_readme is True
-
-
-def test_classify_user_request_treats_can_you_add_auth_as_implementation():
-    result = classify_user_request("can you add auth?")
-    assert result.mode == "implementation"
-    assert result.requires_backend_readme is True
-
-
-def test_classify_user_request_treats_could_you_build_login_page_as_implementation():
-    result = classify_user_request("could you build a login page?")
-    assert result.mode == "implementation"
-    assert result.requires_backend_readme is False
-
-
-def test_classify_user_request_treats_please_add_auth_question_as_implementation():
-    result = classify_user_request("please add auth?")
-    assert result.mode == "implementation"
-    assert result.requires_backend_readme is True
-
-
-def test_classify_user_request_treats_can_i_add_auth_as_conversation():
-    result = classify_user_request("can I add auth?")
-    assert result.mode == "conversation"
-    assert result.requires_backend_readme is True
-
-
-def test_classify_user_request_treats_should_we_update_api_client_as_conversation():
-    result = classify_user_request("should we update the API client?")
-    assert result.mode == "conversation"
-    assert result.requires_backend_readme is True
-
-
-def test_classify_user_request_treats_whats_the_best_way_as_conversation():
-    result = classify_user_request("what's the best way to add auth?")
-    assert result.mode == "conversation"
-    assert result.requires_backend_readme is True
-
-
-def test_build_bootstrap_context_defaults_to_classification():
-    result = build_bootstrap_context("帮我新增一个 billing 页面和后端接口")
-    assert result.mode == "implementation"
-    assert result.requires_draft_plan is True
-
-
-# ---------------------------------------------------------------------------
-# LLM-based async classifier tests
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_classify_user_request_async_uses_llm_result():
-    llm_result = _ClassificationResult(mode="implementation", requires_backend_readme=True)
-    with patch("services.agent_bootstrap._classify_with_llm", AsyncMock(return_value=llm_result)):
-        result = await classify_user_request_async("帮我做一个 billing 页面")
-    assert result.mode == "implementation"
-    assert result.requires_backend_readme is True
-    assert result.requires_draft_plan is True
-
-
-@pytest.mark.asyncio
-async def test_classify_user_request_async_conversation_mode():
-    llm_result = _ClassificationResult(mode="conversation", requires_backend_readme=False)
-    with patch("services.agent_bootstrap._classify_with_llm", AsyncMock(return_value=llm_result)):
-        result = await classify_user_request_async("你好，怎么了？")
-    assert result.mode == "conversation"
-    assert result.requires_draft_plan is False
-
-
-@pytest.mark.asyncio
-async def test_classify_user_request_async_falls_back_to_regex_on_llm_error():
-    with patch("services.agent_bootstrap._classify_with_llm", AsyncMock(side_effect=RuntimeError("API down"))):
-        result = await classify_user_request_async("build a landing page")
-    assert result.mode == "implementation"
-
-
-@pytest.mark.asyncio
-async def test_classify_user_request_async_fails_closed_for_chinese_implementation_on_llm_error():
-    with patch("services.agent_bootstrap._classify_with_llm", AsyncMock(side_effect=RuntimeError("API down"))):
-        result = await classify_user_request_async("帮我做一个 billing 页面")
-    assert result.mode == "implementation"
-    assert result.requires_draft_plan is True
-
-
-@pytest.mark.asyncio
-async def test_classify_user_request_async_chinese_implementation_without_keyword():
-    """Core motivation: Chinese prompts without English keywords must reach LLM."""
-    llm_result = _ClassificationResult(mode="implementation", requires_backend_readme=False)
-    with patch("services.agent_bootstrap._classify_with_llm", AsyncMock(return_value=llm_result)) as mock_llm:
-        result = await classify_user_request_async("帮我做一个 billing 页面")
-    assert result.mode == "implementation"
-    mock_llm.assert_called_once()
 
 
 class FakeAgent:
@@ -348,66 +183,6 @@ class _FakeWorkspaceService:
 
     def snapshot_files(self, host_root):
         return {}
-
-
-@pytest.mark.asyncio
-async def test_run_engineer_session_conversation_mode_skips_sandbox(monkeypatch, tmp_path):
-    from services.engineer_runtime import run_engineer_session
-
-    events: list[dict] = []
-
-    class ConversationWorkspacePaths:
-        host_root = tmp_path / "user-1" / "42"
-        container_root = Path("/workspace")
-
-    class ConversationWorkspaceService:
-        def resolve_paths(self, user_id, project_id):
-            ConversationWorkspacePaths.host_root.mkdir(parents=True, exist_ok=True)
-            return ConversationWorkspacePaths
-
-        def materialize_files(self, host_root, project_files):
-            pass
-
-        def snapshot_files(self, host_root):
-            return {}
-
-    class FailingSandboxService:
-        async def ensure_runtime(self, user_id, project_id, host_root):
-            raise AssertionError("sandbox should not start for conversation mode")
-
-    async def fake_event_sink(event: dict):
-        events.append(event)
-
-    async def fake_files_get_list(self, **kwargs):
-        return {"items": []}
-
-    async def fake_messages_get_list(self, **kwargs):
-        return {"items": []}
-
-    monkeypatch.setattr(
-        "services.agent_bootstrap.classify_user_request_async",
-        AsyncMock(return_value=BootstrapContext(mode="conversation", requires_backend_readme=False, requires_draft_plan=False)),
-    )
-    monkeypatch.setattr("services.project_files.Project_filesService.get_list", fake_files_get_list)
-    monkeypatch.setattr("services.messages.MessagesService.get_list", fake_messages_get_list)
-
-    success = await run_engineer_session(
-        db=FakeDB(),
-        user_id="user-1",
-        project_id=42,
-        prompt="hello",
-        model="MiniMax-M2.7-highspeed",
-        event_sink=fake_event_sink,
-        workspace_service_factory=lambda: ConversationWorkspaceService(),
-        sandbox_service_factory=lambda: FailingSandboxService(),
-        agent_cls=FakeAgent,
-        llm_builder=lambda model: None,
-    )
-
-    assert success is True
-    assert any(event.get("type") == "assistant" for event in events)
-    assistant = next(event for event in events if event.get("type") == "assistant")
-    assert "implementation request" in assistant["content"]
 
 
 def test_agent_run_emits_workspace_sync(monkeypatch):
@@ -837,7 +612,7 @@ def test_agent_prompt_includes_skill_metadata(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_todo_write_tool_writes_docs_todo_md(tmp_path):
+async def test_todo_write_tool_emits_task_update_without_docs_todo(tmp_path):
     from openmanus_runtime.tool.todo_write import TodoWriteTool
 
     events = []
@@ -855,10 +630,8 @@ async def test_todo_write_tool_writes_docs_todo_md(tmp_path):
         {"id": "2", "text": "Add auth flow", "status": "in_progress"},
     ])
 
-    assert (host_root / "docs" / "todo.md").exists()
-    content = (host_root / "docs" / "todo.md").read_text()
-    assert "Create homepage" in content
-    assert "Add auth flow" in content
+    assert "Task system initialized" in result.output
+    assert not (host_root / "docs" / "todo.md").exists()
     assert any(e.get("type") == "todo.updated" for e in events)
 
 
@@ -931,103 +704,19 @@ def test_agent_run_marks_backend_not_configured_without_preview_manifest(monkeyp
     assert fake_sandbox.preview_envs[0]["VITE_ATOMS_PREVIEW_BACKEND_BASE"] == "/preview/preview-session-123/backend/"
 
 
-def test_run_engineer_session_injects_backend_readme_for_backend_requests(tmp_path):
-    """When request requires_backend_readme, README content is injected into task_prompt."""
-    from services.agent_bootstrap import classify_user_request
-
-    # 1. Confirm the classifier flags the request correctly
-    ctx = classify_user_request("add a database table")
-    assert ctx.requires_backend_readme is True
-
-    # 2. Simulate the README reading + template substitution logic inline
-    readme_dir = tmp_path / "app" / "backend"
-    readme_dir.mkdir(parents=True)
-    readme_path = readme_dir / "README.md"
-    readme_path.write_text("# Backend Guide\nUse FastAPI.", encoding="utf-8")
-
-    readme_block = ""
-    if ctx.requires_backend_readme:
-        try:
-            readme_content = readme_path.read_text(encoding="utf-8").strip()
-            if readme_content:
-                readme_block = (
-                    "## Backend README (mandatory reading before implementing backend features)\n\n"
-                    f"{readme_content}\n\n---\n\n"
-                )
-        except OSError:
-            pass
-
-    prompt = "add a database table"
-    workspace_block = (
-        "You must work inside this workspace root: /workspace\n"
-        "Use absolute paths starting with /workspace for file edits, "
-        "and change into this directory before running bash commands.\n\n"
-        f"User request:\n{prompt}"
-    )
-    task_prompt = readme_block + workspace_block
-
-    # 3. Assert the README content appears in the built prompt
-    assert "Backend README" in task_prompt
-    assert "Backend Guide" in task_prompt
-    assert "Use FastAPI." in task_prompt
-    # Workspace instructions still present after the README block
-    assert "You must work inside this workspace root" in task_prompt
-    # README comes before workspace instructions
-    assert task_prompt.index("Backend Guide") < task_prompt.index("You must work inside")
-
-
-def test_run_engineer_session_no_readme_injection_for_frontend_only_requests(tmp_path):
-    """When request does NOT require_backend_readme, README is not injected even if file exists."""
-    from services.agent_bootstrap import classify_user_request
-
-    ctx = classify_user_request("build a landing page")
-    assert ctx.requires_backend_readme is False
-
-    readme_dir = tmp_path / "app" / "backend"
-    readme_dir.mkdir(parents=True)
-    (readme_dir / "README.md").write_text("# Backend Guide\nUse FastAPI.", encoding="utf-8")
-
-    readme_block = ""
-    if ctx.requires_backend_readme:
-        try:
-            readme_content = (readme_dir / "README.md").read_text(encoding="utf-8").strip()
-            if readme_content:
-                readme_block = (
-                    "## Backend README (mandatory reading before implementing backend features)\n\n"
-                    f"{readme_content}\n\n---\n\n"
-                )
-        except OSError:
-            pass
-
-    prompt = "build a landing page"
-    task_prompt = readme_block + f"You must work inside this workspace root: /workspace\n\nUser request:\n{prompt}"
-
-    assert "Backend README" not in task_prompt
-    assert "Backend Guide" not in task_prompt
-    assert "You must work inside this workspace root" in task_prompt
-
-
 def test_run_engineer_session_readme_missing_does_not_fail(tmp_path):
-    """When README file doesn't exist, task_prompt is built without it and no exception raised."""
-    from services.agent_bootstrap import classify_user_request
-
-    ctx = classify_user_request("add an API endpoint")
-    assert ctx.requires_backend_readme is True
-
-    # No README file created — directory doesn't exist
     readme_path = tmp_path / "app" / "backend" / "README.md"
 
     readme_block = ""
-    if ctx.requires_backend_readme:
-        try:
-            readme_content = readme_path.read_text(encoding="utf-8").strip()
-            if readme_content:
-                readme_block = (
-                    "## Backend README (mandatory reading before implementing backend features)\n\n"
-                    f"{readme_content}\n\n---\n\n"
-                )
-        except OSError:
-            pass  # gracefully skip
+    try:
+        readme_content = readme_path.read_text(encoding="utf-8").strip()
+        if readme_content:
+            readme_block = (
+                "## Backend README (mandatory reading before implementing backend features)\n\n"
+                f"{readme_content}\n\n---\n\n"
+            )
+    except OSError:
+        pass
 
     prompt = "add an API endpoint"
     task_prompt = readme_block + f"You must work inside this workspace root: /workspace\n\nUser request:\n{prompt}"
@@ -1095,10 +784,6 @@ async def test_engineer_runtime_emits_repair_continuation_for_backend_preview_fa
     async def fake_messages_get_list(self, **kwargs):
         return {"items": []}
 
-    monkeypatch.setattr(
-        "services.agent_bootstrap.classify_user_request_async",
-        AsyncMock(return_value=BootstrapContext(mode="implementation", requires_backend_readme=False, requires_draft_plan=False)),
-    )
     monkeypatch.setattr("services.project_files.Project_filesService.get_list", fake_files_get_list)
     monkeypatch.setattr("services.messages.MessagesService.get_list", fake_messages_get_list)
 
@@ -1169,5 +854,5 @@ def test_task_prompt_contains_orchestration_workflow_instructions(monkeypatch):
     assert "Orchestration Workflow" in prompt_value
     assert "draft_plan" in prompt_value
     assert "docs/plans/" in prompt_value
-    assert "todo_write" in prompt_value
-    assert "must call `todo_write` before implementation" in prompt_value
+    assert "todo_write" not in prompt_value
+    assert "docs/todo.md" not in prompt_value

@@ -361,7 +361,9 @@ export function WorkspaceInner() {
                 <RefreshCw className="w-3.5 h-3.5" />
               </button>
             </div>
-            {preview.backend_status && preview.backend_status !== "running" ? (
+            {preview.backend_status &&
+            preview.backend_status !== "running" &&
+            preview.backend_status !== "not_configured" ? (
               <div className="border-b border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
                 Backend preview is still starting. Frontend interactions that require API calls may be degraded.
               </div>

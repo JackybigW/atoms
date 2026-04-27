@@ -90,13 +90,6 @@ class TaskUpdateTool(BaseTool):
             for t in tasks
         ]
 
-        if self._approval_gate is not None:
-            has_active = any(t.status == "in_progress" for t in tasks)
-            if has_active:
-                self._approval_gate.notify_task_active()
-            else:
-                self._approval_gate.notify_no_active_task()
-
         summary_event = {"type": "task_store.summary", "tasks": summaries}
         result = self._event_sink(summary_event)
         if hasattr(result, "__await__"):

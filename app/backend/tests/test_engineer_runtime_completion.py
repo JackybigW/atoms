@@ -14,7 +14,6 @@ from services.engineer_runtime import (
     _probe_backend_health,
     run_engineer_session,
 )
-from services.agent_bootstrap import BootstrapContext
 
 class FakeResult:
     def scalars(self): return self
@@ -71,8 +70,6 @@ async def test_engineer_runtime_surfaces_terminate_summary_before_done(monkeypat
     async def fake_event_sink(event):
         events.append(event)
 
-    monkeypatch.setattr("services.agent_bootstrap.classify_user_request_async", AsyncMock(return_value=BootstrapContext(mode="implementation", requires_backend_readme=False, requires_draft_plan=True)))
-
     fake_files_service = MagicMock()
     fake_files_service.get_list = AsyncMock(return_value={"items": []})
     monkeypatch.setattr("services.project_files.Project_filesService", lambda db: fake_files_service)
@@ -85,7 +82,7 @@ async def test_engineer_runtime_surfaces_terminate_summary_before_done(monkeypat
     fake_sessions_service.get_by_project = AsyncMock(return_value=None)
 
     fake_session_record = MagicMock()
-    fake_session_record.preview_session_key = "123"
+    fake_session_record.preview_session_key = "secret-preview-key"
     fake_session_record.preview_expires_at = None
     fake_session_record.frontend_status = "running"
     fake_session_record.backend_status = "running"
@@ -99,9 +96,6 @@ async def test_engineer_runtime_surfaces_terminate_summary_before_done(monkeypat
         approved_request_key = "req_123"
 
         def check_write(self, path):
-            pass
-
-        def check_todo_write(self):
             pass
 
     monkeypatch.setattr("services.approval_gate.ApprovalGate", lambda *args, **kwargs: FakeGate())
@@ -140,7 +134,7 @@ async def test_engineer_runtime_surfaces_terminate_summary_before_done(monkeypat
         agent_cls=FakeAgentCls,
         llm_builder=lambda model: None,
         workspace_runtime_sessions_service_cls=lambda db: fake_sessions_service,
-        preview_session_fields_factory=lambda: {"preview_session_key": "123"},
+        preview_session_fields_factory=lambda: {"preview_session_key": "secret-preview-key"},
         preview_url_builder=fake_preview_url_builder,
         preview_contract_loader=lambda p: None,
     )
@@ -155,6 +149,9 @@ async def test_engineer_runtime_surfaces_terminate_summary_before_done(monkeypat
     done_index = next(index for index, event in enumerate(events) if event.get("type") == "done")
 
     assert summary_index < done_index
+    terminal_logs = [event["content"] for event in events if event.get("type") == "terminal.log"]
+    assert any("preview ready" in log for log in terminal_logs)
+    assert not any("secret-preview-key" in log for log in terminal_logs)
 
 
 def test_extract_terminate_summary_uses_last_terminate_output():
@@ -189,8 +186,6 @@ async def test_engineer_runtime_emits_summary_before_preview_failure(monkeypatch
     async def fake_event_sink(event):
         events.append(event)
 
-    monkeypatch.setattr("services.agent_bootstrap.classify_user_request_async", AsyncMock(return_value=BootstrapContext(mode="implementation", requires_backend_readme=False, requires_draft_plan=True)))
-
     fake_files_service = MagicMock()
     fake_files_service.get_list = AsyncMock(return_value={"items": []})
     monkeypatch.setattr("services.project_files.Project_filesService", lambda db: fake_files_service)
@@ -210,9 +205,6 @@ async def test_engineer_runtime_emits_summary_before_preview_failure(monkeypatch
         approved_request_key = "req_123"
 
         def check_write(self, path):
-            pass
-
-        def check_todo_write(self):
             pass
 
     monkeypatch.setattr("services.approval_gate.ApprovalGate", lambda *args, **kwargs: FakeGate())
@@ -462,14 +454,12 @@ exit 1
 
 
 @pytest.mark.asyncio
-async def test_engineer_runtime_pushback_on_incomplete_tasks(monkeypatch, tmp_path):
+async def test_engineer_runtime_pushback_on_backend_probe_failure(monkeypatch, tmp_path):
     events = []
     async def fake_event_sink(event):
         events.append(event)
     
     agent = FakeAgent()
-    
-    monkeypatch.setattr("services.agent_bootstrap.classify_user_request_async", AsyncMock(return_value=BootstrapContext(mode="implementation", requires_backend_readme=False, requires_draft_plan=True)))
     
     fake_files_service = MagicMock()
     fake_files_service.get_list = AsyncMock(return_value={"items": []})
@@ -489,20 +479,10 @@ async def test_engineer_runtime_pushback_on_incomplete_tasks(monkeypatch, tmp_pa
     fake_session_record.backend_status = "running"
     fake_sessions_service.create = AsyncMock(return_value=fake_session_record)
     
-    fake_task_store = MagicMock()
-    # First call: incomplete tasks
-    # Second call: completed tasks
-    fake_task_store.list_tasks = AsyncMock(side_effect=[
-        [FakeTask("Task 1", "pending")],
-        [FakeTask("Task 1", "completed")]
-    ])
-    monkeypatch.setattr("services.agent_task_store.AgentTaskStore", lambda db: fake_task_store)
-    
     # We need to mock gate.approved_request_key
     class FakeGate:
         approved_request_key = "req_123"
         def check_write(self, path): pass
-        def check_todo_write(self): pass
     monkeypatch.setattr("services.approval_gate.ApprovalGate", lambda *args, **kwargs: FakeGate())
 
     class FakeBashSession:
@@ -519,6 +499,24 @@ async def test_engineer_runtime_pushback_on_incomplete_tasks(monkeypatch, tmp_pa
     # We need to mock the preview URL builder to not crash
     def fake_preview_url_builder(key):
         return {"preview_frontend_url": "http://front", "preview_backend_url": "http://back"}
+
+    class BackendProbeSandbox(FakeSandboxService):
+        def __init__(self):
+            self.probe_calls = 0
+
+        async def exec(self, container_name, command):
+            self.probe_calls += 1
+            if self.probe_calls == 1:
+                return 1, "import failed", ""
+            return 0, "ATOMS_BACKEND_CHECK_OK\n", ""
+
+    class Contract:
+        backend = SimpleNamespace(
+            command="cd /workspace/app/backend && uv run uvicorn main:app --host 0.0.0.0 --port 8000",
+            healthcheck_path="/health",
+        )
+
+    sandbox = BackendProbeSandbox()
         
     await run_engineer_session(
         db=FakeDB(),
@@ -528,13 +526,13 @@ async def test_engineer_runtime_pushback_on_incomplete_tasks(monkeypatch, tmp_pa
         model="fake-model",
         event_sink=fake_event_sink,
         workspace_service_factory=lambda: FakeWorkspaceService(),
-        sandbox_service_factory=lambda: FakeSandboxService(),
+        sandbox_service_factory=lambda: sandbox,
         agent_cls=FakeAgentCls,
         llm_builder=lambda model: None,
         workspace_runtime_sessions_service_cls=lambda db: fake_sessions_service,
         preview_session_fields_factory=lambda: {"preview_session_key": "123"},
         preview_url_builder=fake_preview_url_builder,
-        preview_contract_loader=lambda p: None
+        preview_contract_loader=lambda p: Contract()
     )
     
     # Agent should have been run twice (1 original + 1 pushback)
@@ -544,7 +542,7 @@ async def test_engineer_runtime_pushback_on_incomplete_tasks(monkeypatch, tmp_pa
     system_messages = [e for e in events if e.get("agent") == "system"]
     assert len(system_messages) > 0
     assert "COMPLETION GATE" in system_messages[0]["content"]
-    assert "Task 1" in system_messages[0]["content"]
+    assert "Backend code check FAILED" in system_messages[0]["content"]
 
 
 @pytest.mark.asyncio
@@ -553,17 +551,6 @@ async def test_engineer_runtime_reuses_same_agent_for_pushback_rounds(monkeypatc
 
     async def fake_event_sink(event):
         events.append(event)
-
-    monkeypatch.setattr(
-        "services.agent_bootstrap.classify_user_request_async",
-        AsyncMock(
-            return_value=BootstrapContext(
-                mode="implementation",
-                requires_backend_readme=False,
-                requires_draft_plan=True,
-            )
-        ),
-    )
 
     fake_files_service = MagicMock()
     fake_files_service.get_list = AsyncMock(return_value={"items": []})
@@ -583,22 +570,10 @@ async def test_engineer_runtime_reuses_same_agent_for_pushback_rounds(monkeypatc
     fake_session_record.backend_status = "running"
     fake_sessions_service.create = AsyncMock(return_value=fake_session_record)
 
-    fake_task_store = MagicMock()
-    fake_task_store.list_tasks = AsyncMock(
-        side_effect=[
-            [FakeTask("Task 1", "pending")],
-            [FakeTask("Task 1", "completed")],
-        ]
-    )
-    monkeypatch.setattr("services.agent_task_store.AgentTaskStore", lambda db: fake_task_store)
-
     class FakeGate:
         approved_request_key = "req_123"
 
         def check_write(self, path):
-            pass
-
-        def check_todo_write(self):
             pass
 
     monkeypatch.setattr("services.approval_gate.ApprovalGate", lambda *args, **kwargs: FakeGate())
@@ -624,6 +599,24 @@ async def test_engineer_runtime_reuses_same_agent_for_pushback_rounds(monkeypatc
     def fake_preview_url_builder(key):
         return {"preview_frontend_url": "http://front", "preview_backend_url": "http://back"}
 
+    class BackendProbeSandbox(FakeSandboxService):
+        def __init__(self):
+            self.probe_calls = 0
+
+        async def exec(self, container_name, command):
+            self.probe_calls += 1
+            if self.probe_calls == 1:
+                return 1, "import failed", ""
+            return 0, "ATOMS_BACKEND_CHECK_OK\n", ""
+
+    class Contract:
+        backend = SimpleNamespace(
+            command="cd /workspace/app/backend && uv run uvicorn main:app --host 0.0.0.0 --port 8000",
+            healthcheck_path="/health",
+        )
+
+    sandbox = BackendProbeSandbox()
+
     await run_engineer_session(
         db=FakeDB(),
         user_id="user-1",
@@ -632,13 +625,13 @@ async def test_engineer_runtime_reuses_same_agent_for_pushback_rounds(monkeypatc
         model="fake-model",
         event_sink=fake_event_sink,
         workspace_service_factory=lambda: FakeWorkspaceService(),
-        sandbox_service_factory=lambda: FakeSandboxService(),
+        sandbox_service_factory=lambda: sandbox,
         agent_cls=FakeAgentCls,
         llm_builder=lambda model: None,
         workspace_runtime_sessions_service_cls=lambda db: fake_sessions_service,
         preview_session_fields_factory=lambda: {"preview_session_key": "123"},
         preview_url_builder=fake_preview_url_builder,
-        preview_contract_loader=lambda p: None,
+        preview_contract_loader=lambda p: Contract(),
     )
 
     assert len(FakeAgentCls.instances) == 1

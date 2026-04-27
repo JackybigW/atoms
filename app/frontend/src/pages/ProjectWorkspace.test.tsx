@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as WorkspaceContextModule from "@/contexts/WorkspaceContext";
+import { ensureWorkspaceRuntime } from "@/lib/workspaceRuntime";
 import ProjectWorkspacePage, { PreviewSurface } from "./ProjectWorkspace";
 
 vi.mock("@/contexts/AuthContext", () => ({
@@ -127,6 +128,31 @@ it("shows degraded banner when backend is not yet running", async () => {
   fireEvent.click(appViewerTab);
 
   expect(await screen.findByText(/Backend preview is still starting/i)).toBeInTheDocument();
+});
+
+it("does not show degraded banner for frontend-only preview", async () => {
+  vi.mocked(ensureWorkspaceRuntime).mockResolvedValueOnce({
+    project_id: 42,
+    status: "running",
+    preview_session_key: "preview-session-123",
+    preview_frontend_url: "/preview/preview-session-123/frontend/",
+    preview_backend_url: "/preview/preview-session-123/backend/",
+    frontend_status: "running",
+    backend_status: "not_configured",
+  });
+
+  render(
+    <MemoryRouter initialEntries={["/workspace/42"]}>
+      <Routes>
+        <Route path="/workspace/:projectNumber" element={<ProjectWorkspacePage />} />
+      </Routes>
+    </MemoryRouter>
+  );
+
+  const appViewerTab = await screen.findByRole("button", { name: /App Viewer/i });
+  fireEvent.click(appViewerTab);
+
+  expect(screen.queryByText(/Backend preview is still starting/i)).not.toBeInTheDocument();
 });
 
 it("shows preview failure state instead of falling back to srcDoc", async () => {

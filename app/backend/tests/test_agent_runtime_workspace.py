@@ -437,7 +437,7 @@ async def test_container_bash_session_allows_read_only_commands_after_plan_befor
 
 
 @pytest.mark.asyncio
-async def test_container_bash_session_blocks_write_commands_after_plan_before_todo():
+async def test_container_bash_session_allows_write_commands_after_plan_without_todo():
     class FakeRuntimeService:
         def __init__(self):
             self.calls: list[tuple[str, str]] = []
@@ -452,10 +452,12 @@ async def test_container_bash_session_blocks_write_commands_after_plan_before_to
     gate.record_plan_written("/workspace/docs/plans/2026-04-22-billing.md")
     session = ContainerBashSession(runtime_service, "container-1", approval_gate=gate)
 
-    with pytest.raises(ToolError):
-        await session.run("touch /workspace/app/frontend/src/App.tsx")
+    result = await session.run("touch /workspace/app/frontend/src/App.tsx")
 
-    assert runtime_service.calls == []
+    assert runtime_service.calls == [
+        ("container-1", "cd /workspace && touch /workspace/app/frontend/src/App.tsx")
+    ]
+    assert result.output == "ok"
 
 
 @pytest.mark.asyncio
@@ -698,8 +700,7 @@ def test_approval_gate_allows_plan_write_after_approval():
     gate.approve(request_key="req-1")
     gate.check_write("/workspace/docs/plans/2026-04-22-auth.md")  # should not raise
     gate.record_plan_written("/workspace/docs/plans/2026-04-22-auth.md")
-    with pytest.raises(ToolError):
-        gate.check_write("/workspace/app/frontend/src/App.tsx")
+    gate.check_write("/workspace/app/frontend/src/App.tsx")  # should not raise
 
 
 def test_approval_gate_off_when_not_required():
@@ -731,43 +732,11 @@ async def test_project_file_operator_blocks_docs_write_before_approval(tmp_path)
         await operator.write_file("/workspace/docs/todo.md", "# Todo")
 
 
-# ---------------------------------------------------------------------------
-# ApprovalGate — plan-written tracking
-# ---------------------------------------------------------------------------
-
-def test_approval_gate_plan_required_but_not_written_blocks_todo():
-    gate = ApprovalGate(requires_approval=True)
-    gate.approve(request_key="req-1")
-    with pytest.raises(ToolError):
-        gate.check_todo_write()
-
-
-def test_approval_gate_plan_written_allows_todo():
+def test_approval_gate_plan_written_allows_implementation_without_todo():
     gate = ApprovalGate(requires_approval=True)
     gate.approve(request_key="req-1")
     gate.record_plan_written("/workspace/docs/plans/2026-04-22-billing.md")
-    gate.check_todo_write()  # must not raise
-
-
-def test_approval_gate_no_approval_required_skips_plan_check():
-    gate = ApprovalGate(requires_approval=False)
-    gate.check_todo_write()  # must not raise even without plan
-
-
-def test_approval_gate_record_plan_written_is_idempotent():
-    gate = ApprovalGate(requires_approval=True)
-    gate.approve(request_key="req-1")
-    gate.record_plan_written("/workspace/docs/plans/2026-04-22-billing.md")
-    gate.record_plan_written("/workspace/docs/plans/2026-04-22-billing.md")
-    gate.check_todo_write()  # must not raise
-
-
-def test_approval_gate_plan_written_but_todo_missing_blocks_implementation_write():
-    gate = ApprovalGate(requires_approval=True)
-    gate.approve(request_key="req-1")
-    gate.record_plan_written("/workspace/docs/plans/2026-04-22-billing.md")
-    with pytest.raises(ToolError):
-        gate.check_write("/workspace/app/frontend/src/App.tsx")
+    gate.check_write("/workspace/app/frontend/src/App.tsx")  # should not raise
 
 
 @pytest.mark.asyncio
@@ -799,8 +768,7 @@ async def test_project_file_operator_does_not_record_non_md_file_in_plans(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_todo_write_blocked_without_plan(tmp_path):
-    """todo_write raises ToolError when gate requires plan but none written."""
+async def test_todo_write_allowed_without_plan(tmp_path):
     from openmanus_runtime.tool.todo_write import TodoWriteTool
 
     gate = ApprovalGate(requires_approval=True)
@@ -817,8 +785,8 @@ async def test_todo_write_blocked_without_plan(tmp_path):
         event_sink=events.append,
         approval_gate=gate,
     )
-    with pytest.raises(ToolError):
-        await tool.execute(items=[{"id": "1", "text": "Build UI", "status": "pending"}])
+    result = await tool.execute(items=[{"id": "1", "text": "Build UI", "status": "pending"}])
+    assert "Task system initialized" in result.output
 
 
 @pytest.mark.asyncio
@@ -844,23 +812,8 @@ async def test_todo_write_allowed_after_plan_write(tmp_path):
         approval_gate=gate,
     )
     result = await tool.execute(items=[{"id": "1", "text": "Build billing page", "status": "pending"}])
-    assert "updated" in result.output
-    assert (tmp_path / "docs" / "todo.md").exists()
-
-
-@pytest.mark.asyncio
-async def test_project_file_operator_blocks_direct_todo_write_before_todo_tool(tmp_path):
-    gate = ApprovalGate(requires_approval=True)
-    gate.approve(request_key="req-1")
-    operator = ProjectFileOperator(
-        host_root=tmp_path,
-        container_root=Path("/workspace"),
-        approval_gate=gate,
-    )
-    await operator.write_file("/workspace/docs/plans/2026-04-22-billing.md", "# Plan")
-
-    with pytest.raises(ToolError):
-        await operator.write_file("/workspace/docs/todo.md", "# Todo")
+    assert "Task system initialized" in result.output
+    assert not (tmp_path / "docs" / "todo.md").exists()
 
 
 @pytest.mark.asyncio

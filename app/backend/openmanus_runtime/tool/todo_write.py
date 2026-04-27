@@ -97,8 +97,6 @@ class TodoWriteTool(BaseTool):
         source_plan_path: str = "",
         **_kwargs,
     ) -> CLIResult:
-        if self._approval_gate is not None:
-            self._approval_gate.check_todo_write()
         if items is None:
             items = []
         if len(items) > 8:
@@ -152,17 +150,6 @@ class TodoWriteTool(BaseTool):
                                     f"Complete all blocker tasks before setting this task to in_progress."
                                 )
 
-        if self._approval_gate is not None:
-            has_active = any(i.get("status") == "in_progress" for i in items)
-            if has_active:
-                self._approval_gate.notify_task_active()
-            else:
-                self._approval_gate.notify_no_active_task()
-
-        if self._approval_gate is not None:
-            self._approval_gate.begin_todo_write()
-            self._approval_gate.end_todo_write()
-
         event = {"type": "todo.updated", "items": items}
         result = self._event_sink(event)
         if hasattr(result, "__await__"):
@@ -200,8 +187,5 @@ class TodoWriteTool(BaseTool):
             result = self._event_sink(summary_event)
             if hasattr(result, "__await__"):
                 await result
-
-        if self._approval_gate is not None:
-            self._approval_gate.record_todo_written()
 
         return CLIResult(output=f"Task system initialized with {len(items)} items. Use task_update tool to progress them.")

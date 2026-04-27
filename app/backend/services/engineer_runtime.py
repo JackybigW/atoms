@@ -311,10 +311,7 @@ async def run_engineer_session(
         )
         from openmanus_runtime.tool.draft_plan import DraftPlanTool
         from openmanus_runtime.tool.load_skill import LoadSkillTool
-        from openmanus_runtime.tool.todo_write import TodoWriteTool
-        from openmanus_runtime.tool.task_update import TaskUpdateTool
         from services.agent_draft_plan import get_agent_draft_plan_service
-        from services.agent_task_store import AgentTaskStore
 
         draft_plan_service = get_agent_draft_plan_service()
 
@@ -335,24 +332,9 @@ async def run_engineer_session(
                 stop_event=stop_event,
             )
             load_skill_tool = LoadSkillTool.create(loader=_skill_loader)
-            todo_write_tool = TodoWriteTool.create(
-                file_operator=file_operator,
-                event_sink=traced_event_sink,
-                task_store_factory=lambda: AgentTaskStore(db),
-                project_id=project_id,
-                approval_gate=gate,
-            )
-            task_update_tool = TaskUpdateTool.create(
-                event_sink=traced_event_sink,
-                task_store_factory=lambda: AgentTaskStore(db),
-                project_id=project_id,
-                approval_gate=gate,
-            )
             if hasattr(agent, "available_tools") and agent.available_tools is not None:
                 agent.available_tools.add_tool(draft_plan_tool)
                 agent.available_tools.add_tool(load_skill_tool)
-                agent.available_tools.add_tool(todo_write_tool)
-                agent.available_tools.add_tool(task_update_tool)
             logger.info("%s agent built name=%s", prefix, agent.name)
             return agent
 
@@ -412,21 +394,15 @@ async def run_engineer_session(
             "`docs/plans/{YYYY-MM-DD}-{feature-slug}.md` using str_replace_editor. "
             "This plan must expand each approved item into concrete steps with specific file paths, "
             "what to create/modify, and execution order.\n"
-            "3. You must call `todo_write` BEFORE implementation to initialize the task system with your full checklist (max 8 items). "
-            "Each item can specify a `blocked_by` array if it depends on other tasks.\\n"
-            "4. Implement the plan step by step. You MUST continuously call `task_update` to update task statuses "
-            "to 'completed' as you finish them, and set the next task to 'in_progress'. "
-            "When a task is marked 'completed', it will automatically unblock dependent tasks.\\n"
-            "   For frontend apps, create infrastructure files FIRST (package.json, vite.config.ts, index.html, main.tsx, tsconfig.json) "
+            "3. Implement the plan step by step. "
+            "For frontend apps, create infrastructure files FIRST (package.json, vite.config.ts, index.html, main.tsx, tsconfig.json) "
             "before writing any component files. This ensures pnpm install and builds work from the start.\\n"
-            "5. Verify before finishing — use ONLY these commands, do NOT start background servers:\\n"
+            "4. Verify before finishing — use ONLY these commands, do NOT start background servers:\\n"
             "   Backend: cd /workspace/app/backend && ([ -x .venv/bin/python ] || uv venv .venv) && uv pip install --python .venv/bin/python -r requirements.txt -q 2>&1 && .venv/bin/python -c \"from main import app; print('ok')\"\\n"
             "   Frontend: cd /workspace/app/frontend && pnpm run build 2>&1 | tail -5\\n"
             "   Always install requirements with `uv pip install --python .venv/bin/python`; do not use `.venv/bin/pip`, `pip3 install`, or `python3 -m pip install`.\\n"
             "   A completion gate re-runs the backend import check after you terminate; if it fails you will be asked to fix it.\\n"
-            "6. You MUST ensure ALL tasks are marked as 'completed' via `task_update` BEFORE you finish. Do NOT attempt "
-            "to finish if any task is still pending or in_progress.\\n"
-            "7. After ALL tasks are completed and verification has passed, you MUST send one final message to the user "
+            "5. After verification has passed, you MUST send one final message to the user "
             "that briefly summarizes: what was built, which files were created or modified, and how to use the app. "
             "This is required — do not skip it.\\n\\n"
 
@@ -461,14 +437,6 @@ async def run_engineer_session(
 
             result = await agent.run(current_prompt)
 
-            request_key = gate.approved_request_key
-            if not request_key:
-                break
-
-            task_store = AgentTaskStore(db)
-            tasks = await task_store.list_tasks(project_id, request_key)
-            incomplete_tasks = [t for t in tasks if t.status != "completed"]
-
             has_verification = bash_session.has_verification_run()
 
             has_backend, backend_error = await _probe_backend_health(
@@ -480,19 +448,13 @@ async def run_engineer_session(
             backend_passed = has_backend and backend_error is None
             verification_ok = has_verification or backend_passed
 
-            tasks_done = not tasks or (not incomplete_tasks and verification_ok)
-            if tasks_done and not backend_error:
+            if not backend_error:
                 break
 
             pushback_msgs = []
             if backend_error:
                 pushback_msgs.append(f"- {backend_error}")
-            if incomplete_tasks:
-                titles = ", ".join([f"'{t.subject}'" for t in incomplete_tasks])
-                pushback_msgs.append(
-                    f"- Tasks not completed: {titles}. Mark each completed via task_update."
-                )
-            if tasks and not verification_ok:
+            if has_backend and not verification_ok:
                 pushback_msgs.append(
                     "- No verification command run. For backend run: "
                     "cd /workspace/app/backend && ([ -x .venv/bin/python ] || uv venv .venv) && uv pip install --python .venv/bin/python -r requirements.txt -q 2>&1 && .venv/bin/python -c \"from main import app; print('ok')\". "
@@ -500,14 +462,14 @@ async def run_engineer_session(
                 )
 
             current_prompt = (
-                "COMPLETION GATE — you may not finish until all tasks are marked completed, "
-                "verification has run, and the backend (if any) passes the import check:\n"
+                "COMPLETION GATE — you may not finish until verification has run "
+                "and the backend (if any) passes the import check:\n"
                 + "\n".join(pushback_msgs)
             )
 
             await log_step(
-                f"Completion gate: {len(incomplete_tasks)} incomplete task(s), "
-                f"verification={has_verification}, backend_passed={backend_passed}. Continuing same agent."
+                f"Completion gate: verification={has_verification}, "
+                f"backend_passed={backend_passed}. Continuing same agent."
             )
             await traced_event_sink({
                 "type": "assistant",
@@ -740,7 +702,7 @@ async def run_engineer_session(
                                 "backend_status": backend_status,
                             }
                         )
-                        await log_step(f"preview ready session_key={session.preview_session_key}")
+                        await log_step("preview ready")
                         await traced_event_sink(
                             {
                                 "type": "preview_ready",

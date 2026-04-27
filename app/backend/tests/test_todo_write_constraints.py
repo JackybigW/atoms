@@ -88,46 +88,17 @@ async def test_todo_write_allows_in_progress_when_blocker_complete():
 
 
 @pytest.mark.asyncio
-async def test_todo_write_notifies_gate_when_task_active():
-    gate = MagicMock()
-    gate.check_todo_write = MagicMock()
-    gate.approved_request_key = "req-1"
-    gate.plan_path = "docs/plans/plan.md"
-    gate.begin_todo_write = MagicMock()
-    gate.end_todo_write = MagicMock()
-    gate.record_todo_written = MagicMock()
-    gate.notify_task_active = MagicMock()
-    gate.notify_no_active_task = MagicMock()
+async def test_todo_write_does_not_drive_approval_gate_task_state():
+    class Gate:
+        approved_request_key = "req-1"
+        plan_path = "docs/plans/plan.md"
 
-    tool = _make_tool(current_tasks=[], approval_gate=gate)
+        def __getattr__(self, name):
+            raise AssertionError(f"approval gate method should not be used: {name}")
+
+    tool = _make_tool(current_tasks=[], approval_gate=Gate())
 
     await tool.execute(
         items=[{"id": "1", "text": "Task 1", "status": "in_progress"}],
         request_key="req-1",
     )
-
-    gate.notify_task_active.assert_called_once()
-    gate.notify_no_active_task.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_todo_write_notifies_gate_no_active_when_all_completed():
-    gate = MagicMock()
-    gate.check_todo_write = MagicMock()
-    gate.approved_request_key = "req-1"
-    gate.plan_path = "docs/plans/plan.md"
-    gate.begin_todo_write = MagicMock()
-    gate.end_todo_write = MagicMock()
-    gate.record_todo_written = MagicMock()
-    gate.notify_task_active = MagicMock()
-    gate.notify_no_active_task = MagicMock()
-
-    tool = _make_tool(current_tasks=[], approval_gate=gate)
-
-    await tool.execute(
-        items=[{"id": "1", "text": "Task 1", "status": "completed"}],
-        request_key="req-1",
-    )
-
-    gate.notify_no_active_task.assert_called_once()
-    gate.notify_task_active.assert_not_called()
