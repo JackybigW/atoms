@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from services.engineer_runtime import run_engineer_session
 from services.agent_bootstrap import BootstrapContext
@@ -14,7 +15,7 @@ class FakeDB:
         return FakeResult()
 
 class FakeWorkspacePaths:
-    host_root = "/tmp/fake_host"
+    host_root = Path("/tmp/fake_host")
     container_root = "/workspace"
 
 class FakeWorkspaceService:
