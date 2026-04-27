@@ -1,3 +1,5 @@
+import json
+import math
 from pathlib import Path
 
 from services.agent_run_logs import AgentRunLogStore
@@ -63,3 +65,42 @@ def test_agent_run_log_store_records_metrics(tmp_path):
         }
     ]
     assert run["metrics_summary"] == {"duration_ms": 123, "events": {"dependency_cache.hit": 1}}
+
+
+def test_agent_run_log_store_safely_serializes_metric_attrs(tmp_path: Path):
+    store = AgentRunLogStore(base_root=tmp_path)
+    recorder = store.start_run(user_id="user-1", project_id=42)
+    source_path = tmp_path / "workspace"
+
+    recorder.metric_event(
+        "dependency_cache.hit",
+        category="dependency",
+        attrs={
+            "path": source_path,
+            "tuple": (source_path / "tuple", "value"),
+            "set": {"beta", "alpha"},
+            "nan": math.nan,
+            "inf": math.inf,
+            "neg_inf": -math.inf,
+        },
+    )
+
+    metrics_path = tmp_path / ".agent_runs" / "user-1" / "42" / "latest_metrics.jsonl"
+    raw_metrics = metrics_path.read_text(encoding="utf-8")
+    row = json.loads(
+        raw_metrics,
+        parse_constant=lambda value: (_ for _ in ()).throw(
+            AssertionError(f"non-standard JSON token written: {value}")
+        ),
+    )
+
+    assert "NaN" not in raw_metrics
+    assert "Infinity" not in raw_metrics
+    assert row["attrs"] == {
+        "path": str(source_path),
+        "tuple": [str(source_path / "tuple"), "value"],
+        "set": ["alpha", "beta"],
+        "nan": "nan",
+        "inf": "inf",
+        "neg_inf": "-inf",
+    }

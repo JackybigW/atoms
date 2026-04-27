@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+from services.runtime_telemetry import _safe_json_value
+
 
 RunLogKind = Literal["system", "progress", "terminal", "error"]
 
@@ -174,7 +176,7 @@ class AgentRunLogStore:
         metrics_path = self._metrics_path(user_id=user_id, project_id=project_id)
         metrics_path.parent.mkdir(parents=True, exist_ok=True)
         with metrics_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(metric, ensure_ascii=False) + "\n")
+            handle.write(json.dumps(_safe_json_value(metric), ensure_ascii=False, allow_nan=False) + "\n")
 
     def read_latest_run(self, *, user_id: str, project_id: int) -> dict[str, object] | None:
         manifest_path = self._manifest_path(user_id=user_id, project_id=project_id)
