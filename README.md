@@ -36,7 +36,7 @@ flowchart LR
 
     API --> Auth["Auth Service<br/>JWT / Email / Google OIDC"]
     API --> DB["Database<br/>Users / Projects / Files / Messages / Tasks"]
-    API --> Agent["Engineer Runtime<br/>MiniMax 2.7 + Tool Calling"]
+    API --> Agent["Engineer Runtime<br/>MiniMax / MiMo / DeepSeek + Tool Calling"]
     API --> Preview["Preview Gateway<br/>Same-origin reverse proxy"]
 
     Agent --> Tools["Agent Tools<br/>bash / editor / todo / task / terminate"]
@@ -96,7 +96,7 @@ sequenceDiagram
 | 后端 | FastAPI, SQLAlchemy async, Pydantic v2 |
 | 数据库 | SQLite 本地开发，PostgreSQL 生产可切换 |
 | 认证 | JWT, bcrypt, Google OIDC, Resend Email |
-| LLM Runtime | OpenAI-compatible client, MiniMax-M2.7, tool calling |
+| LLM Runtime | OpenAI-compatible client, MiniMax-M2.7 / MiMo V2.5 Pro / DeepSeek V4 Pro, tool calling |
 | Agent 工具 | bash, str_replace_editor, draft_plan, todo_write, task_update, load_skill, terminate |
 | 沙箱 | Docker, Node 20, Python 3, pnpm, uv |
 | Preview | start-preview, health check, smoke gate, same-origin preview gateway |
@@ -178,13 +178,23 @@ LLM runtime 里也有一个小的稳定性处理：tokenizer 优先使用 `tikto
 
 ### 1. 大模型接入
 
-Atoms 使用 OpenAI-compatible client 接入大模型，默认配置是 MiniMax 2.7：
+Atoms 使用 OpenAI-compatible client 接入大模型，默认配置是 MiniMax 2.7；Workspace 里也可以切换到 MiMo V2.5 Pro 和 DeepSeek V4 Pro：
 
 ```env
 APP_AI_BASE_URL=https://api.minimax.chat/v1
 APP_AI_DEFAULT_MODEL=MiniMax-M2.7
 APP_AI_KEY=your-minimax-api-key
+
+APP_AI_MIMO_BASE_URL=https://token-plan-cn.xiaomimimo.com/v1
+APP_AI_MIMO_MODEL=mimo-v2.5-pro
+APP_AI_MIMO_KEY=your-mimo-api-key
+
+APP_AI_DEEPSEEK_BASE_URL=https://api.deepseek.com
+APP_AI_DEEPSEEK_MODEL=deepseek-v4-pro
+APP_AI_DEEPSEEK_KEY=your-deepseek-api-key
 ```
+
+三者都走 OpenAI-compatible chat completions 接口。MiniMax 会把推理内容包在 `<think>...</think>` 里返回；MiMo 和 DeepSeek 会把推理内容放在兼容响应里的 `reasoning_content` 字段，runtime 会统一拆出 thinking 和用户可见回复。
 
 `openmanus_runtime/llm.py` 封装了模型调用：
 
