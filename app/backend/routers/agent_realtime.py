@@ -3,6 +3,7 @@ import logging
 import os
 from pathlib import Path
 
+from anyio import ClosedResourceError
 from fastapi import APIRouter, Depends, HTTPException, WebSocket
 from starlette.websockets import WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -88,20 +89,34 @@ async def agent_session_websocket(websocket: WebSocket, db: AsyncSession = Depen
         AgentSessionStatePayload(project_id=ticket.project_id).model_dump()
     )
 
+    client_attached = True
+
+    async def send_to_client(payload: dict) -> bool:
+        nonlocal client_attached
+        if not client_attached:
+            return False
+        try:
+            await websocket.send_json(payload)
+            return True
+        except (ClosedResourceError, RuntimeError, WebSocketDisconnect):
+            client_attached = False
+            logger.info("agent realtime websocket detached project_id=%s", ticket.project_id)
+            return False
+
     async def emit_control_plane_event(event: dict) -> None:
         event_type = event.get("type")
         if event_type == "assistant":
             agent = str(event.get("agent") or "swe")
             content = str(event.get("content") or "")
             if content:
-                await websocket.send_json(
+                await send_to_client(
                     {
                         "type": "assistant.delta",
                         "agent": agent,
                         "content": content,
                     }
                 )
-            await websocket.send_json(
+            await send_to_client(
                 {
                     "type": "assistant.message_done",
                     "agent": agent,
@@ -132,11 +147,11 @@ async def agent_session_websocket(websocket: WebSocket, db: AsyncSession = Depen
                     ticket.project_id,
                     event.get("request_key"),
                 )
-            await websocket.send_json(event)
+            await send_to_client(event)
             return
 
         # Forward any other event type directly to the client
-        await websocket.send_json(event)
+        await send_to_client(event)
 
     current_task: asyncio.Task[None] | None = None
     current_stop_event: asyncio.Event | None = None
@@ -156,7 +171,7 @@ async def agent_session_websocket(websocket: WebSocket, db: AsyncSession = Depen
             if current_stop_event is not None and current_stop_event.is_set():
                 return
 
-            await websocket.send_json(
+            await send_to_client(
                 AgentSessionStatePayload(
                     status="completed" if success is not False else "failed",
                     project_id=ticket.project_id,
@@ -168,7 +183,7 @@ async def agent_session_websocket(websocket: WebSocket, db: AsyncSession = Depen
         except Exception:
             logger.exception("agent realtime websocket run failed project_id=%s", ticket.project_id)
             if current_stop_event is None or not current_stop_event.is_set():
-                await websocket.send_json(
+                await send_to_client(
                     AgentSessionStatePayload(
                         status="failed",
                         project_id=ticket.project_id,
@@ -188,7 +203,7 @@ async def agent_session_websocket(websocket: WebSocket, db: AsyncSession = Depen
                     current_stop_event.set()
                 if current_task is not None and not current_task.done():
                     current_task.cancel()
-                await websocket.send_json({"type": "run.stopped"})
+                await send_to_client({"type": "run.stopped"})
                 continue
 
             if message_type == "user.approve_plan":
@@ -215,7 +230,7 @@ async def agent_session_websocket(websocket: WebSocket, db: AsyncSession = Depen
                 continue
 
             current_stop_event = asyncio.Event()
-            await websocket.send_json(
+            await send_to_client(
                 AgentSessionStatePayload(
                     status="running",
                     project_id=ticket.project_id,
@@ -223,6 +238,10 @@ async def agent_session_websocket(websocket: WebSocket, db: AsyncSession = Depen
             )
             current_task = asyncio.create_task(run_current_session(message))
     except WebSocketDisconnect:
-        if current_stop_event is not None and not current_stop_event.is_set():
-            current_stop_event.set()
+        client_attached = False
         logger.info("agent realtime websocket disconnected project_id=%s", ticket.project_id)
+        if current_task is not None and not current_task.done():
+            try:
+                await current_task
+            except asyncio.CancelledError:
+                logger.info("agent realtime websocket run cancelled project_id=%s", ticket.project_id)

@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import threading
 import time
 from pathlib import Path
 
@@ -283,6 +284,44 @@ def test_websocket_user_message_streams_engineer_reply(monkeypatch, tmp_path):
                 "assistant_role": "engineer",
             }
 
+    asyncio.run(engine.dispose())
+
+
+def test_websocket_disconnect_keeps_inflight_session_running(monkeypatch, tmp_path):
+    app, engine, _, _ = _build_environment(tmp_path, monkeypatch)
+
+    run_started = threading.Event()
+    allow_after_disconnect_emit = threading.Event()
+    run_completed = threading.Event()
+    stop_event_states = []
+
+    async def fake_run_engineer_session(*, event_sink, stop_event=None, **kwargs):
+        assert stop_event is not None
+        run_started.set()
+        while not allow_after_disconnect_emit.is_set():
+            await asyncio.sleep(0.01)
+        stop_event_states.append(stop_event.is_set())
+        await event_sink({"type": "progress", "label": "after disconnect"})
+        run_completed.set()
+        return True
+
+    monkeypatch.setattr("routers.agent_realtime.run_engineer_session", fake_run_engineer_session, raising=False)
+
+    with TestClient(app) as client:
+        ticket = client.post("/api/v1/agent/session-ticket", json={"project_id": 42, "model": "gpt-4.1"}).json()[
+            "ticket"
+        ]
+
+        with client.websocket_connect(f"/api/v1/agent/session/ws?ticket={ticket}") as websocket:
+            websocket.receive_json()
+            websocket.send_json({"type": "user.message", "project_id": 42, "prompt": "build auth"})
+            websocket.receive_json()
+            assert run_started.wait(timeout=1.0)
+            websocket.close()
+            allow_after_disconnect_emit.set()
+            assert run_completed.wait(timeout=1.0)
+
+    assert stop_event_states == [False]
     asyncio.run(engine.dispose())
 
 
