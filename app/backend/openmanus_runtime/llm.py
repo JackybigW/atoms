@@ -87,6 +87,10 @@ def normalize_assistant_message_content(message) -> tuple[Optional[str], str]:
     return reasoning_content or thinking, content
 
 
+def should_replay_reasoning_content(model: str) -> bool:
+    return model.lower().startswith("deepseek-")
+
+
 class _FallbackTokenizer:
     """Character-based token estimator used when tiktoken cannot download its data files."""
 
@@ -326,7 +330,9 @@ class LLM:
 
     @staticmethod
     def format_messages(
-        messages: List[Union[dict, Message]], supports_images: bool = False
+        messages: List[Union[dict, Message]],
+        supports_images: bool = False,
+        include_reasoning_content: bool = False,
     ) -> List[dict]:
         """
         Format messages for LLM by converting them to OpenAI message format.
@@ -355,7 +361,14 @@ class LLM:
         for message in messages:
             # Convert Message objects to dictionaries
             if isinstance(message, Message):
+                thinking = message.thinking
                 message = message.to_dict()
+                if (
+                    include_reasoning_content
+                    and thinking
+                    and message.get("role") == "assistant"
+                ):
+                    message["reasoning_content"] = thinking
 
             if isinstance(message, dict):
                 # If message is a dict, ensure it has required fields
@@ -447,13 +460,26 @@ class LLM:
         try:
             # Check if the model supports images
             supports_images = self.model in MULTIMODAL_MODELS
+            include_reasoning_content = should_replay_reasoning_content(self.model)
 
             # Format system and user messages with image support check
             if system_msgs:
-                system_msgs = self.format_messages(system_msgs, supports_images)
-                messages = system_msgs + self.format_messages(messages, supports_images)
+                system_msgs = self.format_messages(
+                    system_msgs,
+                    supports_images,
+                    include_reasoning_content=include_reasoning_content,
+                )
+                messages = system_msgs + self.format_messages(
+                    messages,
+                    supports_images,
+                    include_reasoning_content=include_reasoning_content,
+                )
             else:
-                messages = self.format_messages(messages, supports_images)
+                messages = self.format_messages(
+                    messages,
+                    supports_images,
+                    include_reasoning_content=include_reasoning_content,
+                )
 
             # Calculate input token count
             input_tokens = self.count_message_tokens(messages)
@@ -586,7 +612,11 @@ class LLM:
                 )
 
             # Format messages with image support
-            formatted_messages = self.format_messages(messages, supports_images=True)
+            formatted_messages = self.format_messages(
+                messages,
+                supports_images=True,
+                include_reasoning_content=should_replay_reasoning_content(self.model),
+            )
 
             # Ensure the last message is from the user to attach images
             if not formatted_messages or formatted_messages[-1]["role"] != "user":
@@ -626,7 +656,13 @@ class LLM:
             # Add system messages if provided
             if system_msgs:
                 all_messages = (
-                    self.format_messages(system_msgs, supports_images=True)
+                    self.format_messages(
+                        system_msgs,
+                        supports_images=True,
+                        include_reasoning_content=should_replay_reasoning_content(
+                            self.model
+                        ),
+                    )
                     + formatted_messages
                 )
             else:
@@ -742,13 +778,26 @@ class LLM:
 
             # Check if the model supports images
             supports_images = self.model in MULTIMODAL_MODELS
+            include_reasoning_content = should_replay_reasoning_content(self.model)
 
             # Format messages
             if system_msgs:
-                system_msgs = self.format_messages(system_msgs, supports_images)
-                messages = system_msgs + self.format_messages(messages, supports_images)
+                system_msgs = self.format_messages(
+                    system_msgs,
+                    supports_images,
+                    include_reasoning_content=include_reasoning_content,
+                )
+                messages = system_msgs + self.format_messages(
+                    messages,
+                    supports_images,
+                    include_reasoning_content=include_reasoning_content,
+                )
             else:
-                messages = self.format_messages(messages, supports_images)
+                messages = self.format_messages(
+                    messages,
+                    supports_images,
+                    include_reasoning_content=include_reasoning_content,
+                )
 
             # Calculate input token count
             input_tokens = self.count_message_tokens(messages)
