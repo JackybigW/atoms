@@ -54,6 +54,7 @@ app/backend/alembic/versions/__pycache__/
 
 # Local planning / instruction artifacts
 docs/superpowers/plans/
+README.pdf
 
 # AI assistant config (local only)
 CLAUDE.md

@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# deploy.sh — atoms 一键部署脚本
+# deploy.sh — Vibe Coding Studio 一键部署脚本
 # 用法: ./deploy.sh "feat: 你的提交信息"
 #
 # 做什么：
@@ -28,7 +28,7 @@ SERVER="root@129.211.217.58"
 SERVER_PATH="/home/ubuntu/atoms"
 FRONTEND_PATH="$SERVER_PATH/app/frontend"
 LOCAL_PATH="/Users/jackywang/Documents/atoms"
-GITHUB_REPO="https://github.com/JackybigW/atoms"
+GITHUB_REPO="https://github.com/JackybigW/vibe-coding-studio"
 
 # 如果没传参数，默认提交信息是 "chore: update"
 COMMIT_MSG="${1:-"chore: update"}"
