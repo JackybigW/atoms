@@ -9,7 +9,7 @@
 测试账号：
 
 ```text
-邮箱：test@atoms.demo
+邮箱：test@demo.com
 密码：test1234
 ```
 
