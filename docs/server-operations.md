@@ -6,6 +6,63 @@ Production server:
 - Project path: `/home/ubuntu/atoms`
 - Main branch: `main`
 
+## Public Ingress
+
+The public site currently reaches the server through Cloudflare Tunnel. The
+tunnel hostname route is managed in the Cloudflare Dashboard, not in a local
+`cloudflared` config file, because the service runs in token mode:
+
+```text
+cloudflared tunnel run --token ...
+```
+
+The production request path is:
+
+```text
+Cloudflare Tunnel -> http://localhost:8000 -> nginx -> app/frontend/dist
+                                                   -> /api/     -> FastAPI :8001
+                                                   -> /preview/ -> FastAPI :8001
+```
+
+Current live ports:
+
+```text
+nginx ingress: 80, 443, 8000, 8080
+FastAPI backend: 8001
+Clash proxy: 7890
+PostgreSQL: 5432
+```
+
+Cloudflare public hostnames for the same Atoms app should route to:
+
+```text
+http://localhost:8000
+```
+
+Use `http://localhost:8001` only for a deliberate API-only hostname. That
+bypasses the frontend and nginx SPA fallback.
+
+The live nginx config is:
+
+```text
+/etc/nginx/conf.d/atoms.conf
+```
+
+The repo template is:
+
+```text
+deploy/nginx-atoms.conf
+```
+
+`deploy.sh` does not copy the repo template into `/etc/nginx/conf.d/`. It
+builds the frontend and restarts `atoms-backend`, so nginx config changes must
+be applied deliberately and verified with:
+
+```bash
+nginx -t
+systemctl reload nginx
+```
+
 ## Network Proxy
 
 Use Clash as the only server-side outbound proxy.
